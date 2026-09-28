@@ -50,4 +50,5 @@ flutter {
 
 dependencies {
     implementation("com.google.ar:core:1.56.0")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 }

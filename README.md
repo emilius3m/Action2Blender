@@ -6,17 +6,19 @@ Action2Blender usa un telefono Android compatibile con ARCore per muovere e regi
 
 La prima beta è stata provata sul **Samsung Galaxy S25 Ultra** con Android 16 e Blender 5.2. L'acquisizione ARCore, il collegamento USB e Wi-Fi e il salvataggio di take reali sono stati verificati con l'APK di debug. L'APK di release è firmato e verificato, ma non è stato reinstallato sul telefono dopo la firma. Altri dispositivi Android richiedono prove.
 
+La versione 0.1.1 aggiunge l'abbinamento QR e richiede **Azzera** prima di muovere o registrare la camera. Il QR è stato letto con un decoder di prova, il flusso Blender è stato verificato in modalità senza interfaccia e l'app Android è stata compilata. La scansione QR e l'APK 0.1.1 non sono ancora stati provati fisicamente sul telefono.
+
 ## Uso della beta
 
 1. Scarica lo ZIP dell'add-on dalla [pagina Releases](https://github.com/emilius3m/Action2Blender/releases). In Blender 5.2 usa **Edit > Preferences > Add-ons > Install from Disk**, seleziona lo ZIP e abilita la casella **Action2Blender**. Se Blender era già aperto durante l'installazione, riavvialo. Il pannello si trova nella **Vista 3D > barra laterale (N) > Action2Blender**.
-2. Seleziona la camera della scena. Nel pannello **Action2Blender**, premi **Start phone connection**. Annota IP, porta e codice di abbinamento. Il firewall di Windows potrebbe chiedere di consentire la connessione sulla rete privata.
-3. Scarica l'APK dalla [pagina Releases](https://github.com/emilius3m/Action2Blender/releases) e installalo su un telefono Android compatibile con ARCore. Telefono e PC devono essere sulla stessa rete locale. Apri l'app, concedi il permesso alla fotocamera e inserisci IP, porta e codice.
-4. Quando l'app mostra **Tracking attivo**, premi **Azzera** per mantenere l'inquadratura corrente come punto di partenza. Regola la scala dello spostamento prima di iniziare una take.
+2. Seleziona la camera della scena. Nel pannello **Action2Blender**, premi **Start phone connection**. Il pannello mostra un QR con IP, porta e codice temporaneo. Il firewall di Windows potrebbe chiedere di consentire la connessione sulla rete privata. Se il PC ha più schede di rete, correggi l'IP nel pannello prima di scansionare.
+3. Scarica l'APK dalla [pagina Releases](https://github.com/emilius3m/Action2Blender/releases) e installalo su un telefono Android compatibile con ARCore. Telefono e PC devono essere sulla stessa rete locale. Apri l'app, concedi il permesso alla fotocamera e premi **Scansiona QR di Blender**: i dati si compilano e la connessione parte automaticamente. Puoi inserirli anche a mano. Alla prima scansione, Google Play Services potrebbe scaricare il modulo di lettura QR.
+4. Quando l'app mostra **Tracking attivo**, premi **Azzera** per fissare l'inquadratura corrente della camera già selezionata come punto di partenza. Prima di Azzera, il telefono non sposta la camera e Rec resta disabilitato. Regola la scala dello spostamento prima di iniziare una take.
 5. Premi **Rec**, muovi il telefono, poi **Stop**. La take appare nell'elenco del pannello Blender. Se il tracking si perde, la take entra in pausa; quando torna, premi **Riprendi senza salto**.
 
 Ogni take è una Action distinta sulla stessa camera. I campioni sono conservati sul telefono fino alla conferma di salvataggio in Blender. Durante una breve interruzione della rete, la registrazione locale continua e la take viene ritrasmessa quando la connessione torna. Il telefono mostra i controlli e lo stato del tracking; la scena si guarda sul monitor del PC.
 
-La prima versione usa IP e codice inseriti a mano. L'abbinamento QR e lo streaming del viewport sul telefono sono previsti per versioni successive.
+Lo streaming del viewport sul telefono è previsto per versioni successive.
 
 ## Sviluppo
 

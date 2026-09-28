@@ -4,7 +4,7 @@
 bl_info = {
     "name": "Action2Blender",
     "author": "Action2Blender contributors",
-    "version": (0, 1, 0),
+    "version": (0, 1, 1),
     "blender": (5, 2, 0),
     "location": "3D View > Sidebar > Action2Blender",
     "description": "Drive and record a Blender camera from an ARCore phone",

@@ -6,7 +6,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "addon" / "action2blender"
-DESTINATION = ROOT / "dist" / "Action2Blender-addon-0.1.0.zip"
+DESTINATION = ROOT / "dist" / "Action2Blender-addon-0.1.1.zip"
 
 
 def main() -> None:
@@ -15,6 +15,7 @@ def main() -> None:
         for source in sorted(SOURCE.glob("*.py")):
             archive.write(source, f"action2blender/{source.name}")
         archive.write(ROOT / "LICENSE", "action2blender/LICENSE")
+        archive.write(ROOT / "THIRD_PARTY.md", "action2blender/THIRD_PARTY.md")
     print(DESTINATION)
 
 

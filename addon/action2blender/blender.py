@@ -3,19 +3,27 @@
 import queue
 import secrets
 import socket
+import tempfile
+from pathlib import Path
 
 import bpy
+import bpy.utils.previews
 from bpy.props import CollectionProperty, FloatProperty, IntProperty, StringProperty
 
 from .core import Pose, PoseMapper, sample_take
+from .pairing import pairing_uri, qr_png
 from .transport import PoseServer
 
 
 _server: PoseServer | None = None
 _mapper: PoseMapper | None = None
+_centered_camera: bpy.types.Object | None = None
 _last_phone: Pose | None = None
-_record_state: tuple[Pose, Pose, float, int] | None = None
+_record_state: tuple[Pose, Pose, float, int, bpy.types.Object] | None = None
 _saved_take_ids: set[str] = set()
+_qr_preview = None
+_qr_path: Path | None = None
+_qr_key: tuple[str, int, str] | None = None
 
 
 def _camera_pose(camera: bpy.types.Object) -> Pose:
@@ -31,9 +39,45 @@ def _apply_pose(camera: bpy.types.Object, pose: Pose) -> None:
 
 def _local_ip() -> str:
     try:
-        return socket.gethostbyname(socket.gethostname())
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("1.1.1.1", 80))
+            return probe.getsockname()[0]
     except OSError:
-        return "127.0.0.1"
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return "127.0.0.1"
+
+
+def _clear_qr() -> None:
+    global _qr_preview, _qr_path, _qr_key
+    if _qr_preview is not None:
+        bpy.utils.previews.remove(_qr_preview)
+        _qr_preview = None
+    if _qr_path is not None:
+        _qr_path.unlink(missing_ok=True)
+        _qr_path = None
+    _qr_key = None
+
+
+def _pairing_icon(scene: bpy.types.Scene) -> int:
+    global _qr_preview, _qr_path, _qr_key
+    key = (scene.a2b_host, scene.a2b_port, scene.a2b_token)
+    if _qr_key == key and _qr_preview is not None:
+        return _qr_preview["pairing"].icon_id
+    payload = pairing_uri(*key)
+    _clear_qr()
+    with tempfile.NamedTemporaryFile(prefix="action2blender-", suffix=".png", delete=False) as output:
+        output.write(qr_png(payload))
+        _qr_path = Path(output.name)
+    try:
+        _qr_preview = bpy.utils.previews.new()
+        _qr_preview.load("pairing", str(_qr_path), "IMAGE")
+        _qr_key = key
+        return _qr_preview["pairing"].icon_id
+    except Exception:
+        _clear_qr()
+        raise
 
 
 def _select_take(scene: bpy.types.Scene, index: int) -> None:
@@ -65,10 +109,7 @@ def _save_take(scene: bpy.types.Scene, message: dict) -> None:
     if message["id"] in _saved_take_ids:
         scene.a2b_status = "Take already received"
         return
-    camera = scene.camera
-    if camera is None:
-        raise ValueError("Select a scene camera")
-    anchor, initial, scale, start_frame = _record_state
+    anchor, initial, scale, start_frame, camera = _record_state
     fps = scene.render.fps / scene.render.fps_base
     sampled = sample_take(message["events"], PoseMapper(anchor, initial, scale), fps)
     action = bpy.data.actions.new(name=f"A2B Take {len(scene.a2b_takes) + 1:03d}")
@@ -93,37 +134,45 @@ def _save_take(scene: bpy.types.Scene, message: dict) -> None:
 
 
 def _process_event(scene: bpy.types.Scene, message: dict) -> None:
-    global _mapper, _last_phone, _record_state
+    global _mapper, _centered_camera, _last_phone, _record_state
+    kind = message["type"]
+    if kind == "take":
+        _save_take(scene, message)
+        return
+    if kind == "pause":
+        scene.a2b_status = "Tracking lost: recording paused"
+        return
+    if kind == "scale":
+        scene.a2b_scale = float(message["value"])
+        return
     camera = scene.camera
     if camera is None:
         raise ValueError("Select a scene camera first")
     if camera.parent is not None:
         raise ValueError("Version 0.1 needs a camera without a parent")
-    kind = message["type"]
     if kind in {"pose", "recenter", "resume"}:
         phone = Pose.from_json(message)
         _last_phone = phone
-        if kind == "recenter" or _mapper is None:
+        if kind == "recenter":
             _mapper = PoseMapper(phone, _camera_pose(camera), scene.a2b_scale)
+            _centered_camera = camera
             scene.a2b_status = "Camera centered"
+        elif _mapper is None or camera != _centered_camera:
+            scene.a2b_status = "Press Azzera on the phone"
         elif kind == "resume":
             _mapper.reanchor(phone)
             scene.a2b_status = "Tracking resumed"
         else:
             _mapper.scale = scene.a2b_scale
             _apply_pose(camera, _mapper.map(phone))
-    elif kind == "scale":
-        scene.a2b_scale = float(message["value"])
     elif kind == "record_start":
+        if _mapper is None or camera != _centered_camera:
+            raise ValueError("Press Azzera before recording")
         phone = Pose.from_json(message)
         _last_phone = phone
         scene.a2b_scale = float(message.get("scale", scene.a2b_scale))
-        _record_state = (phone, _camera_pose(camera), scene.a2b_scale, scene.frame_current)
+        _record_state = (phone, _camera_pose(camera), scene.a2b_scale, scene.frame_current, camera)
         scene.a2b_status = "Recording on phone"
-    elif kind == "pause":
-        scene.a2b_status = "Tracking lost: recording paused"
-    elif kind == "take":
-        _save_take(scene, message)
 
 
 def _poll_events() -> float | None:
@@ -161,14 +210,14 @@ class A2B_OT_start(bpy.types.Operator):
     bl_label = "Start phone connection"
 
     def execute(self, context: bpy.types.Context):
-        global _server, _mapper, _last_phone, _record_state
+        global _server, _mapper, _centered_camera, _last_phone, _record_state
         if _server is not None:
             return {"CANCELLED"}
         scene = context.scene
         if scene.camera is None:
             self.report({"ERROR"}, "Select a scene camera first")
             return {"CANCELLED"}
-        token = secrets.token_hex(4)
+        token = secrets.token_hex(8)
         try:
             _server = PoseServer("0.0.0.0", scene.a2b_port, token)
             _server.start()
@@ -177,6 +226,7 @@ class A2B_OT_start(bpy.types.Operator):
             _server = None
             return {"CANCELLED"}
         _mapper = None
+        _centered_camera = None
         _last_phone = None
         _record_state = None
         scene.a2b_token = token
@@ -196,6 +246,7 @@ class A2B_OT_stop(bpy.types.Operator):
             _server.stop()
             _server = None
         context.scene.a2b_token = ""
+        _clear_qr()
         context.scene.a2b_status = "Connection stopped"
         return {"FINISHED"}
 
@@ -223,13 +274,20 @@ class A2B_PT_panel(bpy.types.Panel):
         scene = context.scene
         layout.prop(scene, "camera", text="Camera")
         layout.prop(scene, "a2b_scale", text="Movement scale")
-        layout.prop(scene, "a2b_port", text="Port")
+        port_row = layout.row()
+        port_row.enabled = _server is None
+        port_row.prop(scene, "a2b_port", text="Port")
         if _server is None:
             layout.operator("a2b.start", icon="PLAY")
         else:
             layout.operator("a2b.stop", icon="PAUSE")
-            layout.label(text=f"IP: {scene.a2b_host}")
+            layout.prop(scene, "a2b_host", text="IP del PC")
             layout.label(text=f"Pairing code: {scene.a2b_token}")
+            try:
+                layout.template_icon(icon_value=_pairing_icon(scene), scale=8.0)
+                layout.label(text="Scansiona con Action2Blender")
+            except ValueError:
+                layout.label(text="Inserisci un IPv4 valido per il QR", icon="ERROR")
         layout.label(text=scene.a2b_status[:60])
         layout.separator()
         layout.label(text="Recorded takes")
@@ -259,6 +317,7 @@ def unregister() -> None:
     if _server is not None:
         _server.stop()
         _server = None
+    _clear_qr()
     for name in ("a2b_status", "a2b_host", "a2b_token", "a2b_scale", "a2b_port", "a2b_take_index", "a2b_takes"):
         delattr(bpy.types.Scene, name)
     for cls in reversed(_CLASSES):

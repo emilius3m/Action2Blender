@@ -11,6 +11,9 @@ import android.widget.FrameLayout
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -41,16 +44,18 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
     private var lastTrackedAt = 0L
     private var statusText = "Avvio del tracciamento…"
     private var movementScale = 1.0
+    @Volatile private var centered = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         bridge = BridgeClient(
             onState = { connected, text ->
-                publish(text)
                 if (connected) {
+                    centered = false
                     sendScale()
                     resendPendingTakes()
                 }
+                publish(text)
             },
             onTakeAcknowledged = { id ->
                 File(filesDir, "pending_$id.json").delete()
@@ -82,10 +87,24 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
         MethodChannel(messenger, "org.action2blender/control").setMethodCallHandler { call, result ->
             try {
                 when (call.method) {
+                    "scanQr" -> {
+                        if (recorder.isRecording()) error("Ferma Rec prima di scansionare il QR")
+                        val options = GmsBarcodeScannerOptions.Builder()
+                            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                            .enableAutoZoom()
+                            .build()
+                        GmsBarcodeScanning.getClient(this, options).startScan()
+                            .addOnSuccessListener { barcode -> result.success(barcode.rawValue) }
+                            .addOnCanceledListener { result.success(null) }
+                            .addOnFailureListener { exc ->
+                                result.error("QR_SCAN", exc.message ?: "Scansione non riuscita", null)
+                            }
+                    }
                     "connect" -> {
                         val host = call.argument<String>("host") ?: error("IP mancante")
                         val port = call.argument<Int>("port") ?: error("Porta mancante")
                         val token = call.argument<String>("token") ?: error("Codice mancante")
+                        centered = false
                         bridge.connect(host, port, token)
                         publish("Connessione…")
                         result.success(null)
@@ -97,14 +116,16 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                     }
                     "recenter" -> {
                         val pose = latestPose.get() ?: error("Tracking non disponibile")
-                        if (!bridge.connected || recorder.isRecording()) error("Ferma Rec e connetti Blender")
+                        if (!bridge.connected || !tracking || recorder.isRecording()) error("Attendi il tracking e connetti Blender")
                         bridge.send(pose.message("recenter"))
+                        centered = true
                         publish("Camera riallineata")
                         result.success(null)
                     }
                     "startRecording" -> {
                         val pose = latestPose.get() ?: error("Tracking non disponibile")
                         if (!bridge.connected || !tracking) error("Connetti Blender e attendi ARCore")
+                        if (!centered) error("Premi Azzera prima di registrare")
                         recorder.start(System.nanoTime(), pose)
                         bridge.send(pose.message("record_start").put("scale", movementScale))
                         publish("Registrazione in corso")

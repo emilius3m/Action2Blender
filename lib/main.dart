@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'pairing.dart';
 
 void main() => runApp(const Action2BlenderApp());
 
@@ -39,7 +40,8 @@ class _CameraControlPageState extends State<CameraControlPage> {
   bool _tracking = false,
       _connected = false,
       _recording = false,
-      _paused = false;
+      _paused = false,
+      _centered = false;
   double _scale = 1.0;
 
   @override
@@ -51,6 +53,7 @@ class _CameraControlPageState extends State<CameraControlPage> {
         _status = event['status']?.toString() ?? _status;
         _tracking = event['tracking'] == true;
         _connected = event['connected'] == true;
+        if (!_connected) _centered = false;
         _recording = event['recording'] == true;
         _paused = event['paused'] == true;
       });
@@ -66,17 +69,48 @@ class _CameraControlPageState extends State<CameraControlPage> {
     super.dispose();
   }
 
-  Future<void> _call(String method, [Map<String, Object?>? args]) async {
+  Future<bool> _call(String method, [Map<String, Object?>? args]) async {
     try {
       await _control.invokeMethod<Object?>(method, args);
+      return true;
     } on PlatformException catch (error) {
       if (mounted) {
         setState(() => _status = error.message ?? 'Operazione non riuscita');
       }
+      return false;
+    }
+  }
+
+  Future<void> _scanQr() async {
+    try {
+      final raw = await _control.invokeMethod<String>('scanQr');
+      if (raw == null || !mounted) return;
+      final details = parsePairingQr(raw);
+      _host.text = details.host;
+      _port.text = details.port.toString();
+      _token.text = details.token;
+      setState(() {
+        _centered = false;
+        _status = 'QR letto: connessione a Blender…';
+      });
+      _connect();
+    } on FormatException catch (error) {
+      if (mounted) setState(() => _status = error.message);
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() => _status = error.message ?? 'Scansione non riuscita');
+      }
+    }
+  }
+
+  Future<void> _recenter() async {
+    if (await _call('recenter') && mounted) {
+      setState(() => _centered = true);
     }
   }
 
   void _connect() {
+    setState(() => _centered = false);
     final port = int.tryParse(_port.text);
     if (_host.text.trim().isEmpty ||
         _token.text.trim().isEmpty ||
@@ -157,6 +191,11 @@ class _CameraControlPageState extends State<CameraControlPage> {
                   ),
                 ),
                 const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: _recording ? null : _scanQr,
+                  icon: const Icon(Icons.qr_code_scanner),
+                  label: const Text('Scansiona QR di Blender'),
+                ),
                 FilledButton.icon(
                   onPressed: _connect,
                   icon: const Icon(Icons.wifi),
@@ -179,7 +218,7 @@ class _CameraControlPageState extends State<CameraControlPage> {
                 ),
                 OutlinedButton.icon(
                   onPressed: _connected && _tracking && !_recording
-                      ? () => _call('recenter')
+                      ? _recenter
                       : null,
                   icon: const Icon(Icons.center_focus_strong),
                   label: const Text('Azzera'),
@@ -198,12 +237,15 @@ class _CameraControlPageState extends State<CameraControlPage> {
                   ],
                 ),
                 Text(_status),
+                if (_connected && !_centered)
+                  const Text('Premi Azzera per fissare la camera di partenza.'),
                 const SizedBox(height: 18),
                 SizedBox(
                   width: double.infinity,
                   height: 52,
                   child: FilledButton.icon(
-                    onPressed: _recording || (_connected && _tracking)
+                    onPressed:
+                        _recording || (_connected && _tracking && _centered)
                         ? () => _call(
                             _recording ? 'stopRecording' : 'startRecording',
                           )

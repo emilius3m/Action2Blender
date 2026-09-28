@@ -14,5 +14,6 @@ void main() {
     expect(find.text('Movimento'), findsOneWidget);
     expect(find.text('Ripresa'), findsOneWidget);
     expect(find.text('Rec'), findsOneWidget);
+    expect(find.text('Scansiona QR di Blender'), findsOneWidget);
   });
 }
