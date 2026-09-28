@@ -1,15 +1,5 @@
 """Action2Blender: live Android camera control and non-destructive takes."""
 
-bl_info = {
-    "name": "Action2Blender",
-    "author": "Action2Blender contributors",
-    "version": (0, 1, 0),
-    "blender": (5, 2, 0),
-    "location": "3D View > Sidebar > Action2Blender",
-    "description": "Drive and record a Blender camera from an ARCore phone",
-    "category": "Animation",
-}
-
 import queue
 import secrets
 import socket
