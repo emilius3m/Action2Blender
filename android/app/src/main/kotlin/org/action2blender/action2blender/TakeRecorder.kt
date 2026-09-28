@@ -3,8 +3,26 @@ package org.action2blender.action2blender
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import kotlin.math.abs
+import kotlin.math.acos
+import kotlin.math.max
+import kotlin.math.sqrt
 
 data class PhonePose(val position: FloatArray, val rotation: FloatArray) {
+    fun hasAbruptChangeFrom(previous: PhonePose, elapsedSeconds: Double): Boolean {
+        if (elapsedSeconds <= 0.0 || elapsedSeconds > 0.5) return false
+        val distance = sqrt(position.indices.sumOf { index ->
+            val delta = (position[index] - previous.position[index]).toDouble()
+            delta * delta
+        })
+        val dot = abs(rotation.indices.sumOf { index ->
+            rotation[index].toDouble() * previous.rotation[index].toDouble()
+        }).coerceIn(0.0, 1.0)
+        val angleDegrees = Math.toDegrees(2.0 * acos(dot))
+        return distance > max(0.15, elapsedSeconds * 3.0) ||
+            angleDegrees > max(45.0, elapsedSeconds * 360.0)
+    }
+
     fun message(type: String, timeSeconds: Double? = null): JSONObject = JSONObject().apply {
         put("type", type)
         if (type == "sample" || type == "rebase") put("kind", type)
@@ -54,6 +72,12 @@ class TakeRecorder {
         events.add(pose.message("rebase", elapsed(now)))
         events.add(pose.message("sample", elapsed(now)))
         return true
+    }
+
+    @Synchronized fun rebase(now: Long, pose: PhonePose) {
+        if (!active || waitingForResume) return
+        events.add(pose.message("rebase", elapsed(now)))
+        events.add(pose.message("sample", elapsed(now)))
     }
 
     @Synchronized fun stop(): JSONObject? {

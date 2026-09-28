@@ -170,8 +170,12 @@ class _CameraControlPageState extends State<CameraControlPage> {
                   min: 0.1,
                   max: 10.0,
                   divisions: 99,
-                  onChanged: (value) => setState(() => _scale = value),
-                  onChangeEnd: (value) => _call('setScale', {'value': value}),
+                  onChanged: _recording
+                      ? null
+                      : (value) => setState(() => _scale = value),
+                  onChangeEnd: _recording
+                      ? null
+                      : (value) => _call('setScale', {'value': value}),
                 ),
                 OutlinedButton.icon(
                   onPressed: _connected && _tracking && !_recording

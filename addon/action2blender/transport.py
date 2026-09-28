@@ -15,6 +15,13 @@ MAX_MESSAGE_BYTES = 8 * 1024 * 1024  # full takes are sent after Stop
 MAX_TAKE_EVENTS = 100_000
 
 
+def _validate_scale(value: Any) -> float:
+    scale = float(value)
+    if not math.isfinite(scale) or not 0.01 <= scale <= 100.0:
+        raise ValueError("Invalid movement scale")
+    return scale
+
+
 def validate_message(message: Any) -> dict:
     if not isinstance(message, dict):
         raise ValueError("Message must be an object")
@@ -23,6 +30,8 @@ def validate_message(message: Any) -> dict:
         from .core import Pose
 
         Pose.from_json(message)
+        if kind == "record_start" and "scale" in message:
+            _validate_scale(message["scale"])
     elif kind == "take":
         events = message.get("events")
         if not isinstance(events, list) or not 1 <= len(events) <= MAX_TAKE_EVENTS:
@@ -30,9 +39,7 @@ def validate_message(message: Any) -> dict:
         if not isinstance(message.get("id"), str) or len(message["id"]) > 100:
             raise ValueError("Invalid take ID")
     elif kind == "scale":
-        value = float(message.get("value"))
-        if not math.isfinite(value) or not 0.01 <= value <= 100.0:
-            raise ValueError("Invalid movement scale")
+        _validate_scale(message.get("value"))
     elif kind != "pause":
         raise ValueError("Unknown message type")
     return message

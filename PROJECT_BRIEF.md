@@ -32,9 +32,9 @@
 
 ## Da completare prima della beta pubblica
 
-- Provare l'acquisizione ARCore, i permessi e la connessione su un telefono Android reale.
+- Ripetere le prove su altri modelli Android compatibili con ARCore; il Galaxy S25 Ultra è stato provato via USB e Wi-Fi.
 - Verificare l'andamento delle take in scene Blender reali e aggiungere gli interventi di stabilizzazione necessari.
-- Firmare l'APK di release con una chiave dedicata e definire come custodirla.
+- Installare e provare anche l'APK firmato su un dispositivo reale; la firma di release è stata creata e verificata.
 
 ## Nota sulla distribuzione
 

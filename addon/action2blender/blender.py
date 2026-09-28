@@ -127,6 +127,7 @@ def _process_event(scene: bpy.types.Scene, message: dict) -> None:
     elif kind == "record_start":
         phone = Pose.from_json(message)
         _last_phone = phone
+        scene.a2b_scale = float(message.get("scale", scene.a2b_scale))
         _record_state = (phone, _camera_pose(camera), scene.a2b_scale, scene.frame_current)
         scene.a2b_status = "Recording on phone"
     elif kind == "pause":

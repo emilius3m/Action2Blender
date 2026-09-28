@@ -37,6 +37,8 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
     private var textureId = 0
     private var lastSentAt = 0L
     private var lastStatusAt = 0L
+    private var lastTrackedPose: PhonePose? = null
+    private var lastTrackedAt = 0L
     private var statusText = "Avvio del tracciamento…"
     private var movementScale = 1.0
 
@@ -104,7 +106,7 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                         val pose = latestPose.get() ?: error("Tracking non disponibile")
                         if (!bridge.connected || !tracking) error("Connetti Blender e attendi ARCore")
                         recorder.start(System.nanoTime(), pose)
-                        bridge.send(pose.message("record_start"))
+                        bridge.send(pose.message("record_start").put("scale", movementScale))
                         publish("Registrazione in corso")
                         result.success(null)
                     }
@@ -194,6 +196,7 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
 
     override fun onPause() {
         if (recorder.pause(System.nanoTime())) bridge.send(JSONObject().put("type", "pause"))
+        tracking = false
         if (::glView.isInitialized) glView.onPause()
         synchronized(sessionLock) { session?.pause() }
         super.onPause()
@@ -233,11 +236,13 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                 if (camera.trackingState != TrackingState.TRACKING) null else {
                     val position = FloatArray(3)
                     val orientation = FloatArray(4)
-                    camera.displayOrientedPose.getTranslation(position, 0)
-                    camera.displayOrientedPose.getRotationQuaternion(orientation, 0)
+                    val pose = camera.pose
+                    pose.getTranslation(position, 0)
+                    pose.getRotationQuaternion(orientation, 0)
                     PhonePose(position, orientation)
                 }
             }
+            val wasTracking = tracking
             tracking = phonePose != null
             if (phonePose == null) {
                 if (recorder.pause(now)) {
@@ -250,7 +255,18 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                 return
             }
             latestPose.set(phonePose)
-            recorder.addSample(now, phonePose)
+            val previousPose = lastTrackedPose
+            val abrupt = previousPose != null &&
+                phonePose.hasAbruptChangeFrom(previousPose, (now - lastTrackedAt) / 1_000_000_000.0)
+            val recovered = !wasTracking && previousPose != null
+            if (!recorder.isPaused() && (abrupt || recovered)) {
+                if (abrupt) recorder.rebase(now, phonePose)
+                if (bridge.connected) bridge.send(phonePose.message("resume"))
+                if (abrupt) publish("Tracking corretto senza salto")
+            }
+            lastTrackedPose = phonePose
+            lastTrackedAt = now
+            if (!abrupt) recorder.addSample(now, phonePose)
             if (bridge.connected && !recorder.isPaused() && now - lastSentAt > 50_000_000L) {
                 lastSentAt = now
                 bridge.send(phonePose.message("pose"))
