@@ -4,6 +4,10 @@
 
 Usa un telefono Android come camera virtuale per Blender: muovi l'inquadratura a mano libera o con i comandi sullo schermo, guarda l'anteprima sul telefono e registra ogni ripresa come take separata.
 
+![L'app Action2Blender in orizzontale su un Galaxy S25 Ultra: la vista della camera di Blender occupa lo schermo, con i joystick Sposta e Ruota, i pulsanti su/giù, Scala, Azzera e Rec sopra il video](docs/images/app-landscape.png)
+
+*L'app in orizzontale dopo Azzera: l'anteprima arriva da Blender, i comandi stanno sopra il video.*
+
 > **Versione attuale: 0.2.0 beta 1.** Scarica l'APK e lo ZIP dell'add-on dalla [pagina Releases](https://github.com/emilius3m/Action2Blender/releases). Usa sempre app e add-on della **stessa release**: la 0.2 non si collega all'add-on 0.1 e viceversa.
 
 ## Occorrente
@@ -24,10 +28,14 @@ L'app è in italiano sui telefoni in italiano e in inglese negli altri casi; il 
 
 ## Collega il telefono
 
+<img src="docs/images/blender-panel.png" alt="Il pannello Action2Blender nella barra laterale della Vista 3D di Blender con la connessione attiva: camera, inquadratura 16:9, scala del movimento, QR di abbinamento, stabilizzazione ed elenco delle take registrate. IP, codice di abbinamento e QR sono sfocati." width="260" align="right">
+
 1. Apri la scena in Blender. Per usare una camera esistente, sceglila nel campo **Camera** del pannello Action2Blender. La camera non deve avere un oggetto padre né vincoli attivi. Puoi anche crearne una nuova dall'app dopo il collegamento.
 2. L'opzione **16:9 framing** è attiva per impostazione predefinita e porta la risoluzione della scena a 16:9 all'avvio della connessione; disattivala se vuoi mantenere il formato della scena. Premi **Start phone connection**: il pannello mostra un QR, l'IP del PC, la porta e un codice di abbinamento temporaneo.
 3. Nell'app premi **Scansiona QR di Blender**; il lettore è incluso nell'app. In alternativa inserisci IP, porta e codice e premi **Connetti**. L'app ricorda l'ultimo IP del PC e la porta dopo il riavvio; inserisci di nuovo il codice di abbinamento corrente. Se il PC ha più connessioni di rete, controlla che l'IP nel pannello sia quello raggiungibile dal telefono.
 4. Attendi **Tracciamento attivo**. Per partire dalla camera scelta premi **Azzera**: la sua inquadratura attuale diventa il punto di partenza. Oppure, nella scheda **Nuova camera**, scegli **Dalla vista 3D di Blender** o **Inquadra oggetto selezionato**. Aspetta **Camera pronta** prima di registrare.
+
+<br clear="right">
 
 ## Muovi e registra la camera
 
