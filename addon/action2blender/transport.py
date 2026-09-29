@@ -11,6 +11,7 @@ from typing import Any
 
 
 PROTOCOL_VERSION = 1
+CAMERA_CONTROL_VERSION = 3  # 3: gravity-aligned mapping, joystick travel in ARCore world axes
 MAX_MESSAGE_BYTES = 8 * 1024 * 1024  # full takes are sent after Stop
 MAX_TAKE_EVENTS = 100_000
 
@@ -26,17 +27,20 @@ def validate_message(message: Any) -> dict:
     if not isinstance(message, dict):
         raise ValueError("Message must be an object")
     kind = message.get("type")
-    if kind in {"pose", "recenter", "resume", "record_start"}:
-        from .core import Pose
+    if kind in {"pose", "recenter", "resume", "record_start", "create_camera"}:
+        from .core import Pose, navigation_from_json
 
         Pose.from_json(message)
+        navigation_from_json(message)
+        if kind == "create_camera" and message.get("mode") not in {"view", "subject"}:
+            raise ValueError("Invalid camera placement mode")
         if kind == "record_start" and "scale" in message:
             _validate_scale(message["scale"])
     elif kind == "take":
         events = message.get("events")
         if not isinstance(events, list) or not 1 <= len(events) <= MAX_TAKE_EVENTS:
             raise ValueError("Invalid take length")
-        if not isinstance(message.get("id"), str) or len(message["id"]) > 100:
+        if not isinstance(message.get("id"), str) or not 1 <= len(message["id"]) <= 100:
             raise ValueError("Invalid take ID")
     elif kind == "scale":
         _validate_scale(message.get("value"))
@@ -68,13 +72,23 @@ class _Handler(socketserver.StreamRequestHandler):
                     ):
                         self._reply({"type": "error", "message": "Pairing failed"})
                         return
+                    if message.get("camera_control") != CAMERA_CONTROL_VERSION:
+                        # Older apps send joystick travel in another frame; mixing them would misplace takes.
+                        self._reply({"type": "error", "message": "Update the Action2Blender app on your phone"})
+                        return
                     authenticated = True
                     self.request.settimeout(None)
-                    self._reply({"type": "hello_ok", "version": PROTOCOL_VERSION})
+                    self._reply({
+                        "type": "hello_ok",
+                        "version": PROTOCOL_VERSION,
+                        "viewport_port": server.viewport_port,
+                        "recenter_ack": True,
+                        "camera_control": CAMERA_CONTROL_VERSION,
+                    })
                     continue
                 validated = validate_message(message)
                 response_queue = None
-                if validated["type"] == "take":
+                if validated["type"] in {"take", "recenter", "create_camera"}:
                     response_queue = queue.Queue(maxsize=1)
                     validated["_response"] = response_queue
                 if validated["type"] == "pose":
@@ -87,7 +101,15 @@ class _Handler(socketserver.StreamRequestHandler):
                 if response_queue is None:
                     self._reply({"type": "ack", "message_type": validated["type"]})
                 else:
-                    self._reply(response_queue.get(timeout=120))
+                    try:
+                        response = response_queue.get(timeout=120 if validated["type"] == "take" else 10)
+                    except queue.Empty:
+                        response = {
+                            "type": "error",
+                            "message_type": validated["type"],
+                            "message": "Blender did not confirm the command",
+                        }
+                    self._reply(response)
             except (ValueError, KeyError, TypeError, json.JSONDecodeError, queue.Full, queue.Empty) as exc:
                 self._reply({"type": "error", "message": str(exc)[:160]})
 
@@ -103,6 +125,7 @@ class PoseServer(socketserver.ThreadingTCPServer):
         if not token:
             raise ValueError("Pairing token required")
         self.token = token
+        self.viewport_port = 0
         self.events: queue.Queue[dict] = queue.Queue(maxsize=1024)
         super().__init__((host, port), _Handler)
         self._thread: threading.Thread | None = None

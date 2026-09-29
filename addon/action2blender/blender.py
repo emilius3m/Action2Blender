@@ -4,23 +4,34 @@ import queue
 import secrets
 import socket
 import tempfile
+import time
+from math import atan, sin
 from pathlib import Path
 
 import bpy
 import bpy.utils.previews
-from bpy.props import CollectionProperty, FloatProperty, IntProperty, StringProperty
+from mathutils import Vector
+from bpy.props import BoolProperty, CollectionProperty, FloatProperty, IntProperty, StringProperty
 
-from .core import Pose, PoseMapper, sample_take
+from .core import Pose, PoseMapper, map_navigation, sample_take, stabilize_take
 from .pairing import pairing_uri, qr_png
 from .transport import PoseServer
+from .viewport import ViewportServer, encode_rgba_png
 
 
 _server: PoseServer | None = None
+_viewport_server: ViewportServer | None = None
+_capture_handler = None
+_offscreen = None
+_offscreen_size: tuple[int, int] | None = None
+_offscreen_window: int | None = None
+_last_capture = 0.0
+_capture_interval = 0.10
+_capture_busy = False
 _mapper: PoseMapper | None = None
 _centered_camera: bpy.types.Object | None = None
 _last_phone: Pose | None = None
 _record_state: tuple[Pose, Pose, float, int, bpy.types.Object] | None = None
-_saved_take_ids: set[str] = set()
 _qr_preview = None
 _qr_path: Path | None = None
 _qr_key: tuple[str, int, str] | None = None
@@ -35,6 +46,80 @@ def _apply_pose(camera: bpy.types.Object, pose: Pose) -> None:
     camera.location = pose.position
     camera.rotation_mode = "QUATERNION"
     camera.rotation_quaternion = (pose.rotation[3], *pose.rotation[:3])
+
+
+def _view_space(scene: bpy.types.Scene):
+    for window in bpy.context.window_manager.windows:
+        if window.scene != scene:
+            continue
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                return area.spaces.active
+    return None
+
+
+def _view_matrix(scene: bpy.types.Scene):
+    space = _view_space(scene)
+    if space is not None:
+        return space.region_3d.view_matrix.inverted()
+    return scene.camera.matrix_world.copy() if scene.camera is not None else None
+
+
+def _camera_collection(scene: bpy.types.Scene) -> bpy.types.Collection:
+    def descendants(parent: bpy.types.Collection):
+        for child in parent.children:
+            yield child
+            yield from descendants(child)
+
+    collections = list(descendants(scene.collection))
+    collection = next((item for item in collections if item.get("a2b_camera_collection")), None)
+    if collection is None:
+        collection = next((item for item in collections if item.name == "Action2Blender"), None)
+    if collection is None:
+        collection = bpy.data.collections.new("Action2Blender")
+        scene.collection.children.link(collection)
+    collection["a2b_camera_collection"] = True
+    return collection
+
+
+def _create_camera(scene: bpy.types.Scene, mode: str) -> bpy.types.Object:
+    if _record_state is not None:
+        raise ValueError("Wait for the take to be saved before creating a camera")
+    corners = None
+    if mode == "subject":
+        subject = bpy.context.view_layer.objects.active
+        if subject is None or subject.type == "CAMERA" or subject not in bpy.context.selected_objects:
+            raise ValueError("Select an object in the Blender scene")
+        corners = [subject.matrix_world @ Vector(corner) for corner in subject.bound_box]
+    space = _view_space(scene)
+    if mode == "view" and space is not None and space.region_3d.view_perspective == "ORTHO":
+        raise ValueError("Switch Blender to Perspective View before creating the camera")
+    view = _view_matrix(scene)
+    lens = scene.camera.data.copy() if scene.camera is not None else bpy.data.cameras.new("Action2Blender Lens")
+    lens.animation_data_clear()
+    if mode == "view" and space is not None:
+        lens.lens = space.lens
+    camera = bpy.data.objects.new("Action2Blender Camera", lens)
+    _camera_collection(scene).objects.link(camera)
+    camera.rotation_mode = "QUATERNION"
+    if view is not None:
+        camera.matrix_world = view
+    else:
+        camera.location = (0, 0, 5)
+    if corners is not None:
+        center = sum(corners, Vector()) / len(corners)
+        radius = max(0.1, max((corner - center).length for corner in corners))
+        frame = lens.view_frame(scene=scene)
+        half_fov = max(0.01, min(
+            atan(abs(corner.x / corner.z)) for corner in frame
+        ))
+        half_fov = min(half_fov, max(0.01, min(
+            atan(abs(corner.y / corner.z)) for corner in frame
+        )))
+        distance = radius * 1.2 / sin(half_fov)
+        camera.location = center + camera.rotation_quaternion @ Vector((0, 0, distance))
+    scene.camera = camera
+    return camera
 
 
 def _local_ip() -> str:
@@ -80,6 +165,91 @@ def _pairing_icon(scene: bpy.types.Scene) -> int:
         raise
 
 
+def _capture_size(scene: bpy.types.Scene, max_side: int) -> tuple[int, int]:
+    render = scene.render
+    aspect = (render.resolution_x * render.pixel_aspect_x) / (
+        render.resolution_y * render.pixel_aspect_y
+    )
+    if aspect >= 1:
+        return max_side, max(1, round(max_side / aspect))
+    return max(1, round(max_side * aspect)), max_side
+
+
+def _free_offscreen() -> None:
+    global _offscreen, _offscreen_size, _offscreen_window
+    if _offscreen is not None:
+        try:
+            _offscreen.free()
+        except Exception:
+            pass  # Its Blender window may already have closed.
+    _offscreen = None
+    _offscreen_size = None
+    _offscreen_window = None
+
+
+def _draw_capture() -> None:
+    global _offscreen, _offscreen_size, _offscreen_window
+    global _last_capture, _capture_interval, _capture_busy
+    server = _viewport_server
+    if server is None or _capture_busy:
+        return
+    width_limit = server.frames.active_width()
+    now = time.monotonic()
+    if width_limit is None or now - _last_capture < _capture_interval:
+        return
+    context = bpy.context
+    scene = context.scene
+    if (
+        scene is None or scene.camera is None or context.region is None
+        or context.region.type != "WINDOW" or context.window is None
+    ):
+        server.frames.set_error("Select a camera in Blender")
+        return
+    _capture_busy = True
+    _last_capture = now
+    try:
+        import gpu
+
+        width, height = _capture_size(scene, width_limit)
+        window_id = context.window.as_pointer()
+        if _offscreen_size != (width, height) or _offscreen_window != window_id:
+            _free_offscreen()
+            _offscreen = gpu.types.GPUOffScreen(width, height)
+            _offscreen_size = (width, height)
+            _offscreen_window = window_id
+        camera = scene.camera
+        projection = camera.calc_matrix_camera(
+            context.evaluated_depsgraph_get(), x=width, y=height,
+        )
+        _offscreen.draw_view3d(
+            scene, context.view_layer, context.space_data, context.region,
+            camera.matrix_world.inverted(), projection, do_color_management=True,
+        )
+        with _offscreen.bind():
+            buffer = gpu.state.active_framebuffer_get().read_color(
+                0, 0, width, height, 4, 0, "UBYTE"
+            )
+        buffer.dimensions = width * height * 4
+        server.frames.put(encode_rgba_png(width, height, bytes(buffer)))
+    except Exception as exc:
+        _free_offscreen()
+        server.frames.set_error(f"Blender preview: {exc}")
+    finally:
+        _capture_interval = max(0.10, (time.monotonic() - now) * 3)
+        _capture_busy = False
+
+
+def _stop_viewport() -> None:
+    global _viewport_server, _capture_handler
+    if _capture_handler is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_capture_handler, "WINDOW")
+        _capture_handler = None
+    _free_offscreen()
+    if _viewport_server is not None:
+        _viewport_server.stop()
+        _viewport_server = None
+
+
 def _select_take(scene: bpy.types.Scene, index: int) -> None:
     if not 0 <= index < len(scene.a2b_takes):
         return
@@ -102,17 +272,9 @@ def _take_index_changed(scene: bpy.types.Scene, _context: bpy.types.Context) -> 
     _select_take(scene, scene.a2b_take_index)
 
 
-def _save_take(scene: bpy.types.Scene, message: dict) -> None:
-    global _record_state
-    if _record_state is None:
-        raise ValueError("No recording start received")
-    if message["id"] in _saved_take_ids:
-        scene.a2b_status = "Take already received"
-        return
-    anchor, initial, scale, start_frame, camera = _record_state
-    fps = scene.render.fps / scene.render.fps_base
-    sampled = sample_take(message["events"], PoseMapper(anchor, initial, scale), fps)
-    action = bpy.data.actions.new(name=f"A2B Take {len(scene.a2b_takes) + 1:03d}")
+def _write_take_action(camera: bpy.types.Object, name: str, sampled: list[tuple[int, Pose]],
+                       start_frame: int) -> bpy.types.Action:
+    action = bpy.data.actions.new(name=name)
     action.use_fake_user = True
     camera.animation_data_create()
     camera.animation_data.action = action
@@ -120,17 +282,81 @@ def _save_take(scene: bpy.types.Scene, message: dict) -> None:
         _apply_pose(camera, pose)
         camera.keyframe_insert(data_path="location", frame=start_frame + offset, group="Action2Blender")
         camera.keyframe_insert(data_path="rotation_quaternion", frame=start_frame + offset, group="Action2Blender")
+    return action
+
+
+def _add_take_item(scene: bpy.types.Scene, camera: bpy.types.Object, action: bpy.types.Action,
+                   start_frame: int, end_frame: int, stabilized: bool,
+                   source_action_name: str = "", take_id: str = "") -> None:
     item = scene.a2b_takes.add()
     item.name = action.name
     item.action_name = action.name
     item.camera_name = camera.name
     item.start_frame = start_frame
-    item.end_frame = start_frame + sampled[-1][0]
+    item.end_frame = end_frame
+    item.is_stabilized = stabilized
+    item.source_action_name = source_action_name
+    item.take_id = take_id
+
+
+def _sample_action(scene: bpy.types.Scene, camera: bpy.types.Object, action: bpy.types.Action,
+                   start_frame: int, end_frame: int) -> list[tuple[int, Pose]]:
+    """Read a saved camera Action at each scene frame without changing the user's selection."""
+    camera.animation_data_create()
+    animation = camera.animation_data
+    previous_action = animation.action
+    previous_slot = animation.action_slot
+    previous_frame = scene.frame_current
+    samples = []
+    try:
+        animation.action = action
+        if len(action.slots):
+            animation.action_slot = action.slots[0]
+        for frame in range(start_frame, end_frame + 1):
+            scene.frame_set(frame)
+            rotation = camera.rotation_quaternion
+            pose = Pose(tuple(camera.location),
+                        (rotation.x, rotation.y, rotation.z, rotation.w))
+            samples.append((frame - start_frame, pose))
+    finally:
+        animation.action = previous_action
+        if previous_action is not None and previous_slot is not None:
+            animation.action_slot = previous_slot
+        scene.frame_set(previous_frame)
+    return samples
+
+
+def _save_take(scene: bpy.types.Scene, message: dict) -> None:
+    global _record_state
+    take_id = message["id"]
+    if take_id and any(
+        item.take_id == take_id and bpy.data.actions.get(item.action_name) is not None
+        for saved_scene in bpy.data.scenes for item in saved_scene.a2b_takes
+    ):
+        scene.a2b_status = "Take already received"
+        return
+    if _record_state is None:
+        raise ValueError("No recording start received")
+    anchor, initial, scale, start_frame, camera = _record_state
+    fps = scene.render.fps / scene.render.fps_base
+    sampled = sample_take(message["events"], PoseMapper(anchor, initial, scale), fps)
+    stabilized = None
+    if len(sampled) >= 3 and scene.a2b_auto_stabilize and scene.a2b_stabilization_strength > 0:
+        stabilized = stabilize_take(sampled, fps, scene.a2b_stabilization_strength)
+    take_number = 1 + sum(not item.is_stabilized for item in scene.a2b_takes)
+    name = f"A2B Take {take_number:03d}"
+    end_frame = start_frame + sampled[-1][0]
+    original_action = _write_take_action(camera, f"{name} - Original", sampled, start_frame)
+    _add_take_item(scene, camera, original_action, start_frame, end_frame, False,
+                   take_id=take_id)
+    if stabilized is not None:
+        smooth_action = _write_take_action(camera, f"{name} - Stabilized", stabilized, start_frame)
+        _add_take_item(scene, camera, smooth_action, start_frame, end_frame, True,
+                       original_action.name, take_id)
     scene.a2b_take_index = len(scene.a2b_takes) - 1
-    scene.frame_end = max(scene.frame_end, item.end_frame)
-    _saved_take_ids.add(message["id"])
+    scene.frame_end = max(scene.frame_end, end_frame)
     _record_state = None
-    scene.a2b_status = f"Saved {item.name} ({len(sampled)} frames)"
+    scene.a2b_status = f"Saved {name} ({len(sampled)} frames)"
 
 
 def _process_event(scene: bpy.types.Scene, message: dict) -> None:
@@ -145,11 +371,21 @@ def _process_event(scene: bpy.types.Scene, message: dict) -> None:
     if kind == "scale":
         scene.a2b_scale = float(message["value"])
         return
+    if kind == "create_camera":
+        phone = Pose.from_json(message)
+        camera = _create_camera(scene, message["mode"])
+        _last_phone = phone
+        _mapper = PoseMapper(phone, _camera_pose(camera), scene.a2b_scale)
+        _centered_camera = camera
+        scene.a2b_status = f"Camera ready: {camera.name}"
+        return
     camera = scene.camera
     if camera is None:
-        raise ValueError("Select a scene camera first")
+        raise ValueError("Select a camera in the Action2Blender panel")
     if camera.parent is not None:
-        raise ValueError("Version 0.1 needs a camera without a parent")
+        raise ValueError("The camera has a parent object; choose a free camera")
+    if any(not constraint.mute and constraint.influence > 0 for constraint in camera.constraints):
+        raise ValueError("The camera has active constraints; disable them or choose a free camera")
     if kind in {"pose", "recenter", "resume"}:
         phone = Pose.from_json(message)
         _last_phone = phone
@@ -158,20 +394,22 @@ def _process_event(scene: bpy.types.Scene, message: dict) -> None:
             _centered_camera = camera
             scene.a2b_status = "Camera centered"
         elif _mapper is None or camera != _centered_camera:
-            scene.a2b_status = "Press Azzera on the phone"
+            scene.a2b_status = "Press Recenter on the phone"
         elif kind == "resume":
             _mapper.reanchor(phone)
             scene.a2b_status = "Tracking resumed"
         else:
             _mapper.scale = scene.a2b_scale
-            _apply_pose(camera, _mapper.map(phone))
+            _apply_pose(camera, map_navigation(_mapper, phone, message))
     elif kind == "record_start":
         if _mapper is None or camera != _centered_camera:
-            raise ValueError("Press Azzera before recording")
+            raise ValueError("Press Recenter before recording")
         phone = Pose.from_json(message)
         _last_phone = phone
         scene.a2b_scale = float(message.get("scale", scene.a2b_scale))
-        _record_state = (phone, _camera_pose(camera), scene.a2b_scale, scene.frame_current, camera)
+        anchor = _camera_pose(camera)
+        _mapper = PoseMapper(phone, anchor, scene.a2b_scale)
+        _record_state = (phone, anchor, scene.a2b_scale, scene.frame_current, camera)
         scene.a2b_status = "Recording on phone"
 
 
@@ -181,6 +419,20 @@ def _poll_events() -> float | None:
     scene = bpy.context.scene
     if scene is None:
         return 0.04
+    if (
+        _viewport_server is not None
+        and _viewport_server.frames.active_width() is not None
+        and time.monotonic() - _last_capture >= _capture_interval
+    ):
+        areas = [
+            area for window in bpy.context.window_manager.windows
+            for area in window.screen.areas if area.type == "VIEW_3D"
+        ]
+        if areas:
+            for area in areas:
+                area.tag_redraw()
+        else:
+            _viewport_server.frames.set_error("Open a 3D View in Blender")
     for _ in range(80):
         try:
             message = _server.events.get_nowait()
@@ -190,11 +442,18 @@ def _poll_events() -> float | None:
         try:
             _process_event(scene, message)
             if response_queue is not None:
-                response_queue.put({"type": "take_saved", "id": message["id"]})
-        except (ValueError, KeyError, TypeError) as exc:
+                if message["type"] in {"recenter", "create_camera"}:
+                    response_queue.put({"type": "recenter_ok", "camera": scene.camera.name})
+                else:
+                    response_queue.put({"type": "take_saved", "id": message["id"]})
+        except Exception as exc:
             scene.a2b_status = f"Action2Blender: {exc}"
             if response_queue is not None:
-                response_queue.put({"type": "error", "message": str(exc)[:160]})
+                response_queue.put({
+                    "type": "error",
+                    "message_type": message["type"],
+                    "message": str(exc)[:160],
+                })
     return 0.04
 
 
@@ -203,6 +462,9 @@ class A2B_Take(bpy.types.PropertyGroup):
     camera_name: StringProperty()
     start_frame: IntProperty()
     end_frame: IntProperty()
+    is_stabilized: BoolProperty(default=False)
+    source_action_name: StringProperty()
+    take_id: StringProperty()
 
 
 class A2B_OT_start(bpy.types.Operator):
@@ -210,25 +472,41 @@ class A2B_OT_start(bpy.types.Operator):
     bl_label = "Start phone connection"
 
     def execute(self, context: bpy.types.Context):
-        global _server, _mapper, _centered_camera, _last_phone, _record_state
+        global _server, _viewport_server, _capture_handler
+        global _mapper, _centered_camera, _last_phone, _record_state
+        global _last_capture, _capture_interval
         if _server is not None:
             return {"CANCELLED"}
         scene = context.scene
-        if scene.camera is None:
-            self.report({"ERROR"}, "Select a scene camera first")
-            return {"CANCELLED"}
         token = secrets.token_hex(8)
         try:
             _server = PoseServer("0.0.0.0", scene.a2b_port, token)
+            _viewport_server = ViewportServer("0.0.0.0", token)
+            _server.viewport_port = _viewport_server.server_address[1]
+            _capture_handler = bpy.types.SpaceView3D.draw_handler_add(
+                _draw_capture, (), "WINDOW", "POST_PIXEL"
+            )
+            _viewport_server.start()
             _server.start()
-        except OSError as exc:
+        except Exception as exc:
             self.report({"ERROR"}, str(exc))
+            _stop_viewport()
+            if _server is not None:
+                _server.server_close()
             _server = None
             return {"CANCELLED"}
         _mapper = None
+        _last_capture = 0.0
+        _capture_interval = 0.10
         _centered_camera = None
         _last_phone = None
         _record_state = None
+        if scene.a2b_widescreen:
+            width = max(16, round(scene.render.resolution_x / 16) * 16)
+            scene.render.resolution_x = width
+            scene.render.resolution_y = width * 9 // 16
+            scene.render.pixel_aspect_x = 1.0
+            scene.render.pixel_aspect_y = 1.0
         scene.a2b_token = token
         scene.a2b_host = _local_ip()
         scene.a2b_status = "Waiting for phone"
@@ -245,6 +523,7 @@ class A2B_OT_stop(bpy.types.Operator):
         if _server is not None:
             _server.stop()
             _server = None
+        _stop_viewport()
         context.scene.a2b_token = ""
         _clear_qr()
         context.scene.a2b_status = "Connection stopped"
@@ -262,6 +541,47 @@ class A2B_OT_select_take(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class A2B_OT_stabilize_take(bpy.types.Operator):
+    bl_idname = "a2b.stabilize_take"
+    bl_label = "Stabilize selected take"
+    bl_description = "Create a stabilized Action while keeping the original recording"
+
+    def execute(self, context: bpy.types.Context):
+        scene = context.scene
+        index = scene.a2b_take_index
+        if not 0 <= index < len(scene.a2b_takes):
+            self.report({"ERROR"}, "Select a take first")
+            return {"CANCELLED"}
+        if scene.a2b_stabilization_strength <= 0:
+            self.report({"ERROR"}, "Increase strength above zero")
+            return {"CANCELLED"}
+        item = scene.a2b_takes[index]
+        if item.end_frame - item.start_frame < 2:
+            self.report({"ERROR"}, "The take is too short to stabilize")
+            return {"CANCELLED"}
+        camera = bpy.data.objects.get(item.camera_name)
+        source_name = item.source_action_name or item.action_name
+        source = bpy.data.actions.get(source_name)
+        if camera is None or source is None:
+            self.report({"ERROR"}, "Camera or original Action not found")
+            return {"CANCELLED"}
+        fps = scene.render.fps / scene.render.fps_base
+        try:
+            samples = _sample_action(scene, camera, source, item.start_frame, item.end_frame)
+            smoothed = stabilize_take(samples, fps, scene.a2b_stabilization_strength)
+            base_name = source.name.removesuffix(" - Original").removesuffix(" - Originale")
+            action = _write_take_action(camera, f"{base_name} - Stabilized",
+                                        smoothed, item.start_frame)
+            _add_take_item(scene, camera, action, item.start_frame, item.end_frame,
+                           True, source.name, item.take_id)
+            scene.a2b_take_index = len(scene.a2b_takes) - 1
+            scene.a2b_status = f"Stabilized: {action.name}"
+            return {"FINISHED"}
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+
 class A2B_PT_panel(bpy.types.Panel):
     bl_label = "Action2Blender"
     bl_idname = "A2B_PT_panel"
@@ -273,6 +593,7 @@ class A2B_PT_panel(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
         layout.prop(scene, "camera", text="Camera")
+        layout.prop(scene, "a2b_widescreen", text="16:9 framing")
         layout.prop(scene, "a2b_scale", text="Movement scale")
         port_row = layout.row()
         port_row.enabled = _server is None
@@ -281,23 +602,29 @@ class A2B_PT_panel(bpy.types.Panel):
             layout.operator("a2b.start", icon="PLAY")
         else:
             layout.operator("a2b.stop", icon="PAUSE")
-            layout.prop(scene, "a2b_host", text="IP del PC")
+            layout.prop(scene, "a2b_host", text="PC IP address")
             layout.label(text=f"Pairing code: {scene.a2b_token}")
             try:
                 layout.template_icon(icon_value=_pairing_icon(scene), scale=8.0)
-                layout.label(text="Scansiona con Action2Blender")
+                layout.label(text="Scan with Action2Blender")
             except ValueError:
-                layout.label(text="Inserisci un IPv4 valido per il QR", icon="ERROR")
+                layout.label(text="Enter a valid IPv4 address for the QR code", icon="ERROR")
         layout.label(text=scene.a2b_status[:60])
         layout.separator()
+        layout.prop(scene, "a2b_auto_stabilize", text="Stabilize after Stop")
+        layout.prop(scene, "a2b_stabilization_strength", text="Strength")
         layout.label(text="Recorded takes")
         for index, take in enumerate(scene.a2b_takes):
             row = layout.row()
             row.operator("a2b.select_take", text=take.name, depress=index == scene.a2b_take_index).index = index
             row.label(text=f"{take.start_frame}–{take.end_frame}")
+        stabilize_row = layout.row()
+        stabilize_row.enabled = 0 <= scene.a2b_take_index < len(scene.a2b_takes)
+        stabilize_row.operator("a2b.stabilize_take", icon="MOD_SMOOTH")
 
 
-_CLASSES = (A2B_Take, A2B_OT_start, A2B_OT_stop, A2B_OT_select_take, A2B_PT_panel)
+_CLASSES = (A2B_Take, A2B_OT_start, A2B_OT_stop, A2B_OT_select_take,
+            A2B_OT_stabilize_take, A2B_PT_panel)
 
 
 def register() -> None:
@@ -307,6 +634,9 @@ def register() -> None:
     bpy.types.Scene.a2b_take_index = IntProperty(default=-1, update=_take_index_changed)
     bpy.types.Scene.a2b_port = IntProperty(default=45767, min=1024, max=65535)
     bpy.types.Scene.a2b_scale = FloatProperty(default=1.0, min=0.01, max=100.0)
+    bpy.types.Scene.a2b_widescreen = BoolProperty(default=True)
+    bpy.types.Scene.a2b_auto_stabilize = BoolProperty(default=True)
+    bpy.types.Scene.a2b_stabilization_strength = FloatProperty(default=0.5, min=0.0, max=1.0, subtype="FACTOR")
     bpy.types.Scene.a2b_token = StringProperty(default="")
     bpy.types.Scene.a2b_host = StringProperty(default="")
     bpy.types.Scene.a2b_status = StringProperty(default="Not connected")
@@ -317,8 +647,11 @@ def unregister() -> None:
     if _server is not None:
         _server.stop()
         _server = None
+    _stop_viewport()
     _clear_qr()
-    for name in ("a2b_status", "a2b_host", "a2b_token", "a2b_scale", "a2b_port", "a2b_take_index", "a2b_takes"):
+    for name in ("a2b_status", "a2b_host", "a2b_token", "a2b_scale", "a2b_widescreen",
+                 "a2b_auto_stabilize", "a2b_stabilization_strength", "a2b_port",
+                 "a2b_take_index", "a2b_takes"):
         delattr(bpy.types.Scene, name)
     for cls in reversed(_CLASSES):
         bpy.utils.unregister_class(cls)

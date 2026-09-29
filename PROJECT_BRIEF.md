@@ -1,5 +1,7 @@
 # Action2Blender — brief della beta
 
+> Documento storico delle decisioni della prima beta. Per lo stato del codice locale 0.2.0-dev e le istruzioni per riprendere lo sviluppo, vedere [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md).
+
 ## Decisioni confermate
 
 - App Android e add-on per Blender, progettati fin dall'inizio per altri utenti Android oltre al Samsung Galaxy S25 Ultra usato per le prime prove.

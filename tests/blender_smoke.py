@@ -12,6 +12,8 @@ from action2blender.blender import _pairing_icon, _process_event
 
 action2blender.register()
 scene = bpy.context.scene
+assert scene.a2b_auto_stabilize
+scene.a2b_auto_stabilize = False  # Exercise the original single-Action recording path.
 camera = bpy.data.objects.new("A2B Test Camera", bpy.data.cameras.new("A2B Lens"))
 scene.collection.objects.link(camera)
 scene.camera = camera
@@ -23,7 +25,7 @@ assert abs(camera.location.x) < 1e-6
 try:
     _process_event(scene, {"type": "record_start", "p": [3, 0, 0], "q": identity})
 except ValueError as exc:
-    assert "Azzera" in str(exc)
+    assert "Recenter" in str(exc)
 else:
     raise AssertionError("Recording was allowed before Azzera")
 

@@ -8,7 +8,11 @@ import kotlin.math.acos
 import kotlin.math.max
 import kotlin.math.sqrt
 
-data class PhonePose(val position: FloatArray, val rotation: FloatArray) {
+data class PhonePose(
+    val position: FloatArray,
+    val rotation: FloatArray,
+    val navigation: NavigationPose = NavigationPose.zero(),
+) {
     fun hasAbruptChangeFrom(previous: PhonePose, elapsedSeconds: Double): Boolean {
         if (elapsedSeconds <= 0.0 || elapsedSeconds > 0.5) return false
         val distance = sqrt(position.indices.sumOf { index ->
@@ -29,6 +33,8 @@ data class PhonePose(val position: FloatArray, val rotation: FloatArray) {
         if (timeSeconds != null) put("t", timeSeconds)
         put("p", JSONArray(position.map { it.toDouble() }))
         put("q", JSONArray(rotation.map { it.toDouble() }))
+        put("v", JSONArray(navigation.translation.map { it.toDouble() }))
+        put("look", JSONArray(navigation.look.map { it.toDouble() }))
     }
 }
 

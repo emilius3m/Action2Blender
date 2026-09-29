@@ -1,32 +1,43 @@
 # Action2Blender
 
-Action2Blender usa un telefono Android compatibile con ARCore per muovere e registrare una camera di Blender. L'interfaccia del telefono è in Flutter; il tracciamento ARCore e la comunicazione locale sono in Kotlin; l'add-on Blender è in Python.
+Usa un telefono Android come camera virtuale per Blender: muovi l'inquadratura a mano libera o con i comandi sullo schermo, guarda l'anteprima sul telefono e registra ogni ripresa come take separata.
 
-## Stato
+> **Quale versione installare:** questa guida descrive l'app **0.2.0-dev+11** insieme all'add-on Blender **0.2.3**. Sono pacchetti locali di sviluppo e **non sono ancora disponibili nella pagina Releases di GitHub**. La release pubblica 0.1.1 è precedente e non va abbinata a questi pacchetti.
 
-La prima beta è stata provata sul **Samsung Galaxy S25 Ultra** con Android 16 e Blender 5.2. L'acquisizione ARCore, il collegamento USB e Wi-Fi e il salvataggio di take reali sono stati verificati con l'APK di debug. L'APK di release è firmato e verificato, ma non è stato reinstallato sul telefono dopo la firma. Altri dispositivi Android richiedono prove.
+## Occorrente
 
-La versione 0.1.1 aggiunge l'abbinamento QR e richiede **Azzera** prima di muovere o registrare la camera. Il QR è stato letto con un decoder di prova, il flusso Blender è stato verificato in modalità senza interfaccia e l'app Android è stata compilata. La scansione QR e l'APK 0.1.1 non sono ancora stati provati fisicamente sul telefono.
+- Blender 5.2 (provato con 5.2.1) su un PC e un telefono Android compatibile con ARCore.
+- PC e telefono sulla stessa rete locale, con il traffico consentito dal firewall del PC.
+- I due pacchetti della versione indicata sopra: lo ZIP dell'add-on e l'APK Android. Nel checkout locale si trovano rispettivamente in `dist/Action2Blender-addon-0.2.3-dev.zip` e `build/app/outputs/flutter-apk/app-release.apk`. La cartella `build/` viene generata compilando l'app e non è inclusa nel codice su GitHub.
 
-## Uso della beta
+## Installazione
 
-1. Scarica lo ZIP dell'add-on dalla [pagina Releases](https://github.com/emilius3m/Action2Blender/releases). In Blender 5.2 usa **Edit > Preferences > Add-ons > Install from Disk**, seleziona lo ZIP e abilita la casella **Action2Blender**. Se Blender era già aperto durante l'installazione, riavvialo. Il pannello si trova nella **Vista 3D > barra laterale (N) > Action2Blender**.
-2. Seleziona la camera della scena. Nel pannello **Action2Blender**, premi **Start phone connection**. Il pannello mostra un QR con IP, porta e codice temporaneo. Il firewall di Windows potrebbe chiedere di consentire la connessione sulla rete privata. Se il PC ha più schede di rete, correggi l'IP nel pannello prima di scansionare.
-3. Scarica l'APK dalla [pagina Releases](https://github.com/emilius3m/Action2Blender/releases) e installalo su un telefono Android compatibile con ARCore. Telefono e PC devono essere sulla stessa rete locale. Apri l'app, concedi il permesso alla fotocamera e premi **Scansiona QR di Blender**: i dati si compilano e la connessione parte automaticamente. Puoi inserirli anche a mano. Alla prima scansione, Google Play Services potrebbe scaricare il modulo di lettura QR.
-4. Quando l'app mostra **Tracking attivo**, premi **Azzera** per fissare l'inquadratura corrente della camera già selezionata come punto di partenza. Prima di Azzera, il telefono non sposta la camera e Rec resta disabilitato. Regola la scala dello spostamento prima di iniziare una take.
-5. Premi **Rec**, muovi il telefono, poi **Stop**. La take appare nell'elenco del pannello Blender. Se il tracking si perde, la take entra in pausa; quando torna, premi **Riprendi senza salto**.
+1. In Blender apri **Edit → Preferences → Add-ons → Install from Disk**, scegli lo ZIP dell'add-on e abilita **Action2Blender**. Il pannello appare nella **Vista 3D → barra laterale (N) → Action2Blender**. Se Blender era già aperto con una versione precedente, salva la scena e ricarica l'add-on o riavvia Blender.
+2. Installa l'APK sul telefono, apri **Action2Blender** e concedi l'accesso alla fotocamera. Android potrebbe chiedere di installare o aggiornare i servizi AR di Google.
 
-Ogni take è una Action distinta sulla stessa camera. I campioni sono conservati sul telefono fino alla conferma di salvataggio in Blender. Durante una breve interruzione della rete, la registrazione locale continua e la take viene ritrasmessa quando la connessione torna. Il telefono mostra i controlli e lo stato del tracking; la scena si guarda sul monitor del PC.
+Se Android rifiuta l'aggiornamento perché l'app esistente ha una firma diversa, **non disinstallarla finché hai take non ancora confermate da Blender**: i file in attesa sono conservati nell'area privata dell'app.
 
-Lo streaming del viewport sul telefono è previsto per versioni successive.
+## Collega il telefono
 
-## Sviluppo
+1. Apri la scena in Blender. Per partire da una camera esistente, sceglila nel campo **Camera** del pannello Action2Blender. Puoi anche creare una camera dall'app dopo il collegamento.
+2. Nel pannello, scegli se mantenere **Inquadratura 16:9**: è attiva per impostazione predefinita e modifica la risoluzione della scena quando avvii la connessione. Premi **Start phone connection**. Blender mostra un QR, l'IP del PC, la porta e un codice di abbinamento.
+3. Nell'app premi **Scansiona QR di Blender**. Il lettore è incluso nell'app: non serve uno scanner esterno. Se non riesci a leggere il QR, inserisci IP, porta e codice nei campi dell'app e premi **Connetti**. Se il PC ha più connessioni di rete, controlla che l'IP mostrato da Blender sia quello raggiungibile dal telefono.
+4. Attendi **Tracking attivo**. Per usare la camera esistente premi **Azzera**: la sua posizione attuale diventa il punto di partenza. In alternativa, usa **Nuova camera → Dalla vista 3D di Blender** oppure **Inquadra oggetto selezionato**. Attendi la conferma **Camera pronta** prima di registrare.
 
-- `flutter analyze` e `flutter test` verificano l'interfaccia Flutter.
-- `python -m unittest discover -s tests -v` verifica pose, take e protocollo.
-- Da una shell nella cartella di Blender: `blender --background --factory-startup --python Action2Blender/tests/blender_smoke.py` verifica la creazione e selezione di due take.
-- `python scripts/package_addon.py` crea lo ZIP installabile dell'add-on.
-- `flutter build apk --debug --target-platform android-arm64` crea un APK di prova per telefoni arm64.
-- Su Windows, `scripts/create_release_key.ps1` crea una chiave di firma privata fuori dal repository; `scripts/build_release.ps1` crea l'APK di release. La password è cifrata per l'account Windows corrente: conserva una copia sicura della chiave e della password per poter pubblicare aggiornamenti futuri.
+## Muovi e registra la camera
 
-Il progetto originale è distribuito sotto [licenza MIT](LICENSE). Il codice di ARCore e delle dipendenze mantiene le rispettive licenze.
+- Muovi e ruota il telefono per spostare la camera. I controlli **Sposta**, **Ruota** e salita/discesa aggiungono movimento virtuale. Regola **Scala** e **Stabilizzazione live** prima di premere Rec. In orizzontale l'anteprima occupa lo schermo, con i comandi sopra il video.
+- Premi **Rec** per iniziare e **Stop** per terminare. La take compare nell'elenco **Recorded takes** in Blender. Con **Stabilizza dopo Stop** attivo, l'add-on conserva sia l'Action originale sia una versione stabilizzata. Seleziona la take desiderata nel pannello e salva il file `.blend` per conservarla nel progetto.
+- Se ARCore perde il tracciamento o l'app va in pausa, la take si sospende; quando il tracking torna, premi **Riprendi senza salto**. Durante la sessione ARCore attiva lo schermo resta acceso senza doverlo toccare. Dopo **Stop**, la take rimane sul telefono fino alla conferma di Blender; se il Wi-Fi si interrompe, viene ritrasmessa alla riconnessione. Potrebbe essere necessario premere di nuovo **Azzera**.
+
+## Se qualcosa non funziona
+
+| Problema | Controllo rapido |
+| --- | --- |
+| Il telefono non si collega | Verifica che PC e telefono siano sulla stessa rete, controlla l'IP nel pannello Blender e consenti la connessione nel firewall della rete privata. |
+| Il QR non viene letto | Usa **Scansiona QR di Blender** dentro Action2Blender, concedi il permesso alla fotocamera oppure inserisci IP, porta e codice a mano. |
+| La camera non si muove o Rec è disabilitato | Attendi il tracking e **Camera pronta**. Se usi una camera esistente, sceglila nel pannello e premi **Azzera**. La camera non deve avere un oggetto padre o vincoli attivi. |
+| L'anteprima non arriva | Tieni aperta una Vista 3D in Blender e controlla il firewall: l'anteprima usa una seconda porta locale oltre alla porta di collegamento. |
+| Dopo Stop la take non compare | Aspetta la conferma di salvataggio in Blender e controlla il messaggio nell'app. Non disinstallare l'app finché una take è in attesa. |
+
+Questa build locale non è ancora stata provata sul telefono con tutte le funzioni recenti. Per lo stato delle verifiche e per riprendere lo sviluppo, vedi [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md). Il codice originale è distribuito con [licenza MIT](LICENSE); le dipendenze mantengono le rispettive licenze.

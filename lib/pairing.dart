@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'app_language.dart';
 
 class PairingDetails {
   const PairingDetails(this.host, this.port, this.token);
@@ -21,20 +22,34 @@ PairingDetails parsePairingQr(String value) {
       !RegExp(
         r'^[A-Za-z0-9_-]{8,64}$',
       ).hasMatch(uri.queryParameters['t'] ?? '')) {
-    throw const FormatException('QR Action2Blender non valido');
+    throw FormatException(
+      uiText('QR Action2Blender non valido', 'Invalid Action2Blender QR code'),
+    );
   }
   final address = InternetAddress.tryParse(uri.host);
   if (address == null || address.type != InternetAddressType.IPv4) {
-    throw const FormatException('Il QR deve contenere un indirizzo IPv4');
+    throw FormatException(
+      uiText(
+        'Il QR deve contenere un indirizzo IPv4',
+        'The QR code must contain an IPv4 address',
+      ),
+    );
   }
   if (address.isLoopback ||
       address.address == '0.0.0.0' ||
       address.rawAddress.first >= 224) {
-    throw const FormatException('Indirizzo del PC non raggiungibile');
+    throw FormatException(
+      uiText(
+        'Indirizzo del PC non raggiungibile',
+        'PC address is not reachable',
+      ),
+    );
   }
   final port = uri.port;
   if (port < 1 || port > 65535) {
-    throw const FormatException('Porta non valida nel QR');
+    throw FormatException(
+      uiText('Porta non valida nel QR', 'Invalid port in QR code'),
+    );
   }
   return PairingDetails(address.address, port, uri.queryParameters['t']!);
 }
