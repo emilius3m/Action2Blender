@@ -49,8 +49,30 @@ La build firmata usa la chiave privata già presente sul PC. Un APK debug ha fir
 
 Il 29 settembre la build 0.3.0-dev.1 firmata è stata installata sopra la 0.2.0+13 sul Galaxy S25 Ultra, conservando i dati. L'add-on 0.3 è stato copiato nella cartella add-on di Blender 5.2.1. Sono stati osservati collegamento via QR, tracking attivo, anteprima Wi-Fi, frame in avanzamento durante Rec e conferma **Take salvata in Blender** dopo la fine della timeline. Questa è una prova breve in una scena di test; non misura ancora sincronizzazione e qualità del movimento. Dopo ulteriori modifiche locali, i file dell'add-on su disco sono stati aggiornati: un Blender GUI già aperto può mantenere il modulo precedente in memoria fino a ricarica o riavvio.
 
+### Prova del 29 settembre pomeriggio (app build 15, add-on con le correzioni di `de5226a`)
+
+Scena di prova: cubo animato sui frame 1–96, camera con chiave Euler, 24 fps. Comandi sul telefono in parte da USB (`adb input`), in parte a mano. Dal pomeriggio Blender registra ogni messaggio ricevuto dal telefono, con ora e ID, per ricostruire le sequenze.
+
+Funziona:
+
+- collegamento con codice inserito a mano; camera creata dal telefono nella collezione **Action2Blender**;
+- Rec e Stop manuale: take su una **copia** della camera, Action Original + Stabilized + Lens; la camera sorgente non cambia;
+- conto alla rovescia di 3 s, con **Annulla** durante il conto; durata della take coerente con il momento di Stop (7,9 s registrati, Stop a 7,95 s dall'avvio);
+- stop automatico alla fine della timeline;
+- joystick **Sposta** con camera inclinata verso il basso: movimento orizzontale a quota costante; il movimento compare nei frame 83–112 (3,5–4,7 s) per una spinta di 3,2–4,9 s, quindi posa e timeline sono sincronizzate;
+- pausa automatica alla perdita del tracking; Opzioni aperto durante Rec mantiene la registrazione e abilita gli slider dell'obiettivo.
+
+Problemi trovati:
+
+1. **Take con cambi di obiettivo rifiutata da Blender** ("Take timestamps must be finite and ordered"). Il tracking aggiunge i campioni con l'ora di inizio del frame ARCore, i cambi di obiettivo con l'ora del momento: un pinch fra i due inserisce campioni con tempo decrescente. Blender rifiuta l'intera take, resta in attesa di quell'ID e blocca nuove riprese e nuove camere finché non si riavvia la connessione; il telefono la ritrasmette a ogni ricollegamento. Take di prova conservata sul telefono: `12be1425`.
+2. **IP sbagliato nel QR con una VPN attiva**: il pannello propone l'indirizzo della VPN (`10.96.241.40`) invece di quello Wi-Fi (`192.168.1.224`). Il campo IP va corretto a mano.
+3. **App fuori passo rispetto a Blender (intermittente)**: in alcune prove l'app è uscita dallo stato di registrazione mentre Blender continuava; Stop non raggiungeva Blender e un tocco sul pulsante rimasto su **Annulla** poteva avviare una nuova ripresa. In un caso l'app ha poi inviato la take da sola. Causa non chiarita; tocchi manuali e automatici si sono sovrapposti in parte delle prove.
+4. **Nessun limite di tempo nello stato di preparazione**: se la conferma di avvio si perde, l'app resta su **Annulla** senza uscita automatica.
+
+Da non confondere con difetti dell'app: `uiautomator dump` si blocca durante Rec perché l'interfaccia si aggiorna di continuo, e leggere una take con `frame_set` sposta il frame corrente della scena.
+
 ## Prove ancora necessarie
 
-Aprire una scena di prova con un oggetto animato e salvare una copia del `.blend`. Verificare: conto 3/5 secondi; Stop manuale; pinch/fuoco/diaframma nella Action; cambio take; pausa e ripresa dopo perdita del Wi-Fi; importazione dopo riavvio di Blender; recupero dopo chiusura forzata dell'app. Misurare lo scarto fra frame mostrato e posa salvata, soprattutto in una scena lenta. Ripetere il layout su un tablet reale quando disponibile.
+Correggere il problema 1 e importare la take `12be1425` per verificare pinch, fuoco e diaframma nella Action dell'obiettivo. Poi: pausa e ripresa dopo perdita del Wi-Fi; importazione dopo riavvio di Blender (o riavvio della connessione durante Rec); recupero dopo chiusura forzata dell'app; cambio take; conto di 5 secondi. Chiarire il problema 3 con un registro degli eventi sul telefono. Misurare lo scarto fra frame mostrato e posa salvata in una scena lenta. Ripetere il layout su un tablet reale quando disponibile.
 
 Le prove automatiche non sostituiscono questa verifica con Blender GUI e ARCore. Finché non è conclusa, considerare la 0.3 una build di sviluppo locale.
