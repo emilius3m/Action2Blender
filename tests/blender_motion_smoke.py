@@ -63,7 +63,7 @@ constraint = camera.constraints.new("LIMIT_LOCATION")
 events.put({**phone("recenter", [0, 0, 0]), "_response": responses})
 addon._poll_events()
 rejected = responses.get_nowait()
-assert rejected["type"] == "error" and "vincoli" in rejected["message"], rejected
+assert rejected["type"] == "error" and "constraints" in rejected["message"], rejected
 camera.constraints.remove(constraint)
 
 # Panning the phone with a camera tilted 30° down must keep the horizon level.

@@ -4,10 +4,10 @@
 bl_info = {
     "name": "Action2Blender",
     "author": "Action2Blender contributors",
-    "version": (0, 2, 3),
+    "version": (0, 2, 0),
     "blender": (5, 2, 0),
     "location": "3D View > Sidebar > Action2Blender",
-    "description": "Development build: drive, record, and preview a Blender camera from Android",
+    "description": "Drive, record, and preview a Blender camera from an Android phone",
     "category": "Animation",
 }
 
