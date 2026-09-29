@@ -157,18 +157,28 @@ class PoseMapper:
         self._anchor(phone, self.current)
 
 
+def _in_time_order(events: list[dict]) -> list[dict]:
+    """Take events sorted by time, keeping the recorded order of equal times.
+
+    Phones from app build 15 and earlier could append a tracking sample a few
+    milliseconds after a lens change with a later time; sorting restores the
+    real order instead of rejecting the whole take.
+    """
+    for event in events:
+        moment = float(event["t"])
+        if not isfinite(moment) or moment < 0:
+            raise ValueError("Take timestamps must be finite and non-negative")
+    return sorted(events, key=lambda event: float(event["t"]))
+
+
 def sample_take(events: list[dict], mapper: PoseMapper, fps: float,
                 frame_times: list[tuple[int, float]] | None = None) -> list[tuple[int, Pose]]:
     """Return camera poses on scene frames; supplied frame times follow Blender playback."""
     if not isfinite(fps) or fps <= 0:
         raise ValueError("Frame rate must be positive")
     samples: list[tuple[float, Pose]] = []
-    last_time = -1.0
-    for event in events:
+    for event in _in_time_order(events):
         moment = float(event["t"])
-        if not isfinite(moment) or moment < last_time or moment < 0:
-            raise ValueError("Take timestamps must be finite and ordered")
-        last_time = moment
         phone = Pose.from_json(event)
         if event.get("kind") == "rebase":
             mapper.reanchor(phone)
@@ -218,10 +228,8 @@ def sample_optics(events: list[dict], fps: float,
         raise ValueError("Invalid initial optics")
     samples: list[tuple[float, tuple[float, float, float]]] = [(0.0, initial)]
     last_time = -1.0
-    for event in events:
+    for event in _in_time_order(events):
         moment = float(event["t"])
-        if not isfinite(moment) or moment < last_time or moment < 0:
-            raise ValueError("Take timestamps must be finite and ordered")
         last_time = moment
         values = tuple(float(event.get(key, samples[-1][1][index]))
                        for index, key in enumerate(("lens", "focus_distance", "fstop")))

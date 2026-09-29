@@ -505,9 +505,10 @@ def _save_take(scene: bpy.types.Scene, message: dict) -> None:
         for marker in markers:
             frame = int(marker["frame"])
             moment = float(marker["t"])
-            if (frame <= previous_frame or frame > end_limit or not isfinite(moment) or
-                    moment < previous_time or moment < 0):
+            if frame <= previous_frame or frame > end_limit or not isfinite(moment) or moment < 0:
                 raise ValueError("Frame markers must be ordered and inside the take range")
+            # The phone's estimate of Blender's clock can improve mid-take and step back slightly.
+            moment = max(moment, previous_time)
             frame_times.append((frame - start_frame, moment))
             previous_frame, previous_time = frame, moment
         if frame_times and frame_times[0][0] > 0:
@@ -515,7 +516,7 @@ def _save_take(scene: bpy.types.Scene, message: dict) -> None:
         elif frame_times:
             frame_times[0] = (0, 0.0)
         frame_times = frame_times or None
-        if not frame_times and float(message["events"][-1]["t"]) * fps > 120_000:
+        if not frame_times and max(float(event["t"]) for event in message["events"]) * fps > 120_000:
             raise ValueError("Take is too long")
         sampled = sample_take(message["events"], PoseMapper(anchor, initial, scale), fps, frame_times)
         optical_samples = sample_optics(message["events"], fps, initial_optics, frame_times)

@@ -105,6 +105,20 @@ assert scene.camera is recording_camera, scene.camera
 assert scene.frame_current == 20 and scene.a2b_take_index == selected_before
 addon._record_state = None
 
+# Build 15 phones could send a lens-change sample before a slightly older tracking sample,
+# and a frame time a little behind the previous one: the take is imported, not rejected.
+jumbled_id = "55555555-6666-4777-8888-999999999999"
+jumbled = {**take, "id": jumbled_id, "snapshot": {**snapshot, "id": jumbled_id}, "events": [
+    {"t": 0, "p": [0, 0, 0], "q": [0, 0, 0, 1], "lens": 50, "focus_distance": 10, "fstop": 2.8},
+    {"t": 0.52, "p": [0.52, 0, 0], "q": [0, 0, 0, 1], "lens": 80, "focus_distance": 10, "fstop": 2.8},
+    {"t": 0.50, "p": [0.50, 0, 0], "q": [0, 0, 0, 1], "lens": 50, "focus_distance": 10, "fstop": 2.8},
+    {"t": 1, "p": [1, 0, 0], "q": [0, 0, 0, 1], "lens": 80, "focus_distance": 10, "fstop": 2.8},
+], "frame_markers": [{"frame": 10, "t": 0}, {"frame": 22, "t": 0.51}, {"frame": 23, "t": 0.505},
+                     {"frame": 34, "t": 1}]}
+_process_event(scene, jumbled)
+jumbled_item = next(item for item in scene.a2b_takes if item.take_id == jumbled_id)
+assert (jumbled_item.start_frame, jumbled_item.end_frame) == (10, 34)
+
 invalid = {**second_take, "id": "invalid-new", "snapshot": {
     **second_snapshot, "id": "invalid-new",
     "tracking": {**second_snapshot["tracking"], "scale": float("nan")},

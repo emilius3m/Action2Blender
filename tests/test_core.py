@@ -145,18 +145,31 @@ class PoseMappingTests(unittest.TestCase):
         frames = sample_take(events, mapper, 2)
         self.assertVectorAlmostEqual([pose.position[0] for _, pose in frames], [0, 0.5, 1, 1.5])
 
-    def test_rejects_invalid_scale_and_event_order(self):
+    def test_rejects_invalid_scale_and_timestamps(self):
         with self.assertRaises(ValueError):
             validate_message({"type": "scale", "value": -1})
-        with self.assertRaises(ValueError):
-            sample_take(
-                [
-                    {"t": 1, "p": [0, 0, 0], "q": IDENTITY},
-                    {"t": 0, "p": [1, 0, 0], "q": IDENTITY},
-                ],
-                PoseMapper(Pose((0, 0, 0), IDENTITY), Pose((0, 0, 0), IDENTITY), 1),
-                24,
-            )
+        for bad_time in (float("nan"), -0.5):
+            with self.assertRaises(ValueError):
+                sample_take(
+                    [{"t": 0, "p": [0, 0, 0], "q": IDENTITY}, {"t": bad_time, "p": [1, 0, 0], "q": IDENTITY}],
+                    PoseMapper(LEVEL_PHONE, Pose((0, 0, 0), LEVEL_CAMERA), 1),
+                    24,
+                )
+
+    def test_lens_change_between_tracking_samples_is_put_back_in_order(self):
+        # Build 15 phones: a tracking sample stamped at its frame start (0.50 s) is appended
+        # after a lens change stamped at the moment it happened (0.52 s).
+        events = [
+            {"t": 0.0, "p": [0, 0, 0], "q": IDENTITY, "lens": 50},
+            {"t": 0.52, "p": [0.52, 0, 0], "q": IDENTITY, "lens": 80},
+            {"t": 0.50, "p": [0.50, 0, 0], "q": IDENTITY, "lens": 50},
+            {"t": 1.0, "p": [1, 0, 0], "q": IDENTITY, "lens": 80},
+        ]
+        ordered = sorted(events, key=lambda event: event["t"])
+        frames = sample_take(events, PoseMapper(LEVEL_PHONE, Pose((0, 0, 0), LEVEL_CAMERA), 1), 24)
+        expected = sample_take(ordered, PoseMapper(LEVEL_PHONE, Pose((0, 0, 0), LEVEL_CAMERA), 1), 24)
+        self.assertEqual(frames, expected)
+        self.assertEqual(sample_optics(events, 24, (50, 10, 2.8)), sample_optics(ordered, 24, (50, 10, 2.8)))
 
     def test_stabilization_reduces_jitter_and_preserves_endpoints(self):
         samples = [

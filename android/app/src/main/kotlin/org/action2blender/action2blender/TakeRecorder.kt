@@ -52,6 +52,7 @@ class TakeRecorder(directory: File) {
     private var startedAt = 0L
     private var pausedAt = 0L
     private var pausedDuration = 0L
+    private var lastEventTime = 0.0
     private var active = false
     private var waitingForResume = false
 
@@ -71,6 +72,7 @@ class TakeRecorder(directory: File) {
         startedAt = now
         pausedAt = 0L
         pausedDuration = 0L
+        lastEventTime = 0.0
         journal.start(id, snapshot)
         active = true
         waitingForResume = false
@@ -79,7 +81,7 @@ class TakeRecorder(directory: File) {
 
     @Synchronized fun addSample(now: Long, pose: PhonePose) {
         if (active && !waitingForResume) {
-            val event = withOptics(pose.message("sample", elapsed(now)))
+            val event = withOptics(pose.message("sample", eventTime(now)))
             events.add(event)
             journal.append("sample", event)
         }
@@ -100,7 +102,8 @@ class TakeRecorder(directory: File) {
     @Synchronized fun addFrameMarker(now: Long, frame: Int) {
         if (!active || waitingForResume) return
         if (frameMarkers.isNotEmpty() && frame <= frameMarkers.last().getInt("frame")) return
-        val marker = JSONObject().put("frame", frame).put("t", elapsed(now))
+        val previous = if (frameMarkers.isEmpty()) 0.0 else frameMarkers.last().getDouble("t")
+        val marker = JSONObject().put("frame", frame).put("t", maxOf(elapsed(now), previous))
         frameMarkers.add(marker)
         journal.append("frame", marker)
     }
@@ -117,7 +120,7 @@ class TakeRecorder(directory: File) {
         if (!active || !waitingForResume) return false
         pausedDuration += now - pausedAt
         waitingForResume = false
-        val rebase = withOptics(pose.message("rebase", elapsed(now)))
+        val rebase = withOptics(pose.message("rebase", eventTime(now)))
         events.add(rebase)
         journal.append("sample", rebase, true)
         addSample(now, pose)
@@ -126,7 +129,7 @@ class TakeRecorder(directory: File) {
 
     @Synchronized fun rebase(now: Long, pose: PhonePose) {
         if (!active || waitingForResume) return
-        val rebase = withOptics(pose.message("rebase", elapsed(now)))
+        val rebase = withOptics(pose.message("rebase", eventTime(now)))
         events.add(rebase)
         journal.append("sample", rebase, true)
         addSample(now, pose)
@@ -157,4 +160,13 @@ class TakeRecorder(directory: File) {
 
     private fun elapsed(now: Long): Double =
         (now - startedAt - pausedDuration).coerceAtLeast(0L) / 1_000_000_000.0
+
+    /**
+     * Event time that never goes back. Tracking stamps a sample with its ARCore frame's start
+     * time but appends it a few milliseconds later, so a lens change can land in between.
+     */
+    private fun eventTime(now: Long): Double {
+        lastEventTime = maxOf(elapsed(now), lastEventTime)
+        return lastEventTime
+    }
 }
