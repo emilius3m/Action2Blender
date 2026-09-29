@@ -17,7 +17,9 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 CAMERA_CONTROL_VERSION = 4  # 4: timeline, optics and recoverable take metadata
-MAX_MESSAGE_BYTES = 8 * 1024 * 1024  # full takes are sent after Stop
+MAX_HELLO_BYTES = 4 * 1024  # before pairing, only a short hello is accepted
+MAX_MESSAGE_BYTES = 256 * 1024  # takes travel as take_begin/take_chunk/take_end, not one line
+CLIENT_TIMEOUT_SECONDS = 30  # the phone pings every 2 s; silence this long means a dead link
 MAX_TAKE_EVENTS = 100_000
 MAX_TAKE_BYTES = 64 * 1024 * 1024
 MAX_CHUNK_BYTES = 48 * 1024
@@ -103,10 +105,14 @@ class _Handler(socketserver.StreamRequestHandler):
         authenticated = False
         self.request.settimeout(15)
         while True:
-            line = self.rfile.readline(MAX_MESSAGE_BYTES + 1)
+            limit = MAX_MESSAGE_BYTES if authenticated else MAX_HELLO_BYTES
+            try:
+                line = self.rfile.readline(limit + 1)
+            except OSError:
+                return  # silent client: finish() reports the lost connection
             if not line:
                 return
-            if len(line) > MAX_MESSAGE_BYTES or not line.endswith(b"\n"):
+            if len(line) > limit or not line.endswith(b"\n"):
                 self._reply({"type": "error", "message": "Message too large"})
                 return
             message = None
@@ -130,7 +136,7 @@ class _Handler(socketserver.StreamRequestHandler):
                         server.events.put_nowait({"type": "connection_lost"})
                         server.client.request.close()
                     server.client = self
-                    self.request.settimeout(None)
+                    self.request.settimeout(CLIENT_TIMEOUT_SECONDS)
                     self._reply({
                         "type": "hello_ok",
                         "version": PROTOCOL_VERSION,

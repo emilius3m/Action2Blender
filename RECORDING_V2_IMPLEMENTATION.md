@@ -10,6 +10,13 @@ Aggiornato il 29 settembre 2026. Questa versione non è pubblicata. La release s
 - **Persistenza e rete:** il telefono scrive i campioni in `recording_<id>.jsonl` e sincronizza il file almeno ogni secondo. A Stop crea atomicamente `pending_<id>.json`; lo elimina solo dopo `take_saved`. Una ripresa interrotta diventa una take parziale da inviare con comando esplicito. Il collegamento usa ping/pong, riconnessione automatica nella stessa sessione, trasferimento a blocchi da 48 KiB con hash e ripresa dal blocco mancante. I tempi dei frame sono corretti con una stima dell'offset fra gli orologi del PC e del telefono.
 - **Interfaccia:** il frame e i valori ottici appaiono durante Rec anche in orizzontale; una take parziale è indicata nel pannello Blender.
 
+## Correzioni successive (29 settembre)
+
+- Una take in attesa importata durante un'altra registrazione non azzera più quella registrazione, non cambia la camera attiva e non sposta la timeline (`tests/blender_recording_v2_smoke.py`).
+- Aprire un altro `.blend` con la connessione attiva non ferma più i comandi: timer persistente, handler `load_pre`/`load_post`. Una ripresa in corso viene fermata come parziale e il telefono ne riceve l'avviso; dopo il caricamento serve di nuovo Azzera (`tests/blender_file_load_smoke.py`).
+- La posa dal vivo rispetta il modo di rotazione della camera (Euler, quaternione, asse-angolo): le chiavi dell'utente continuano a funzionare. Un'Action sostituita da una take riceve il fake user e non sparisce al salvataggio.
+- Rete: prima dell'abbinamento Blender accetta righe di al massimo 4 KB, dopo al massimo 256 KB; un client abbinato silenzioso per 30 s viene chiuso. Sul telefono le pose dal vivo in coda sono al massimo una: le più recenti sostituiscono quella in attesa (`tests/test_transport.py`).
+
 ## Percorsi principali
 
 | Parte | File |

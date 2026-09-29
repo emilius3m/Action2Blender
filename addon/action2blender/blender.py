@@ -11,7 +11,8 @@ from pathlib import Path
 
 import bpy
 import bpy.utils.previews
-from mathutils import Vector
+from bpy.app.handlers import persistent
+from mathutils import Quaternion, Vector
 from bpy.props import BoolProperty, CollectionProperty, FloatProperty, IntProperty, StringProperty
 
 from .core import Pose, PoseMapper, map_navigation, sample_optics, sample_take, stabilize_take
@@ -46,9 +47,16 @@ def _camera_pose(camera: bpy.types.Object) -> Pose:
 
 
 def _apply_pose(camera: bpy.types.Object, pose: Pose) -> None:
+    """Set the pose in the camera's own rotation mode, so its existing Euler or axis-angle keys keep working."""
     camera.location = pose.position
-    camera.rotation_mode = "QUATERNION"
-    camera.rotation_quaternion = (pose.rotation[3], *pose.rotation[:3])
+    rotation = Quaternion((pose.rotation[3], *pose.rotation[:3]))
+    if camera.rotation_mode == "QUATERNION":
+        camera.rotation_quaternion = rotation
+    elif camera.rotation_mode == "AXIS_ANGLE":
+        axis, angle = rotation.to_axis_angle()
+        camera.rotation_axis_angle = (angle, *axis)
+    else:
+        camera.rotation_euler = rotation.to_euler(camera.rotation_mode, camera.rotation_euler)
 
 
 def _camera_uuid(camera: bpy.types.Object) -> str:
@@ -337,6 +345,7 @@ def _select_take(scene: bpy.types.Scene, index: int) -> None:
         scene.a2b_status = "Take or camera missing"
         return
     camera.animation_data_create()
+    _protect_action(camera.animation_data.action, action)
     camera.animation_data.action = action
     if len(action.slots):
         camera.animation_data.action_slot = action.slots[0]
@@ -344,12 +353,19 @@ def _select_take(scene: bpy.types.Scene, index: int) -> None:
         lens_action = bpy.data.actions.get(item.lens_action_name)
         if lens_action is not None:
             camera.data.animation_data_create()
+            _protect_action(camera.data.animation_data.action, lens_action)
             camera.data.animation_data.action = lens_action
             if len(lens_action.slots):
                 camera.data.animation_data.action_slot = lens_action.slots[0]
     scene.camera = camera
     scene.frame_set(item.start_frame)
     scene.a2b_status = f"Selected {item.name}"
+
+
+def _protect_action(previous: bpy.types.Action | None, replacement: bpy.types.Action) -> None:
+    """Keep an Action the user made by hand alive in the .blend once a take replaces it."""
+    if previous is not None and previous is not replacement:
+        previous.use_fake_user = True
 
 
 def _take_index_changed(scene: bpy.types.Scene, _context: bpy.types.Context) -> None:
@@ -361,7 +377,9 @@ def _write_take_action(camera: bpy.types.Object, name: str, sampled: list[tuple[
     action = bpy.data.actions.new(name=name)
     action.use_fake_user = True
     camera.animation_data_create()
+    _protect_action(camera.animation_data.action, action)
     camera.animation_data.action = action
+    camera.rotation_mode = "QUATERNION"  # take Actions key rotation_quaternion
     for offset, pose in sampled:
         _apply_pose(camera, pose)
         camera.keyframe_insert(data_path="location", frame=start_frame + offset, group="Action2Blender")
@@ -376,6 +394,7 @@ def _write_lens_action(camera: bpy.types.Object, name: str,
     action.use_fake_user = True
     lens = camera.data
     lens.animation_data_create()
+    _protect_action(lens.animation_data.action, action)
     lens.animation_data.action = action
     lens.dof.use_dof = True
     for offset, (focal, focus, fstop) in sampled:
@@ -442,6 +461,11 @@ def _save_take(scene: bpy.types.Scene, message: dict) -> None:
     ):
         scene.a2b_status = "Take already received"
         return
+    # A take left pending on the phone may arrive while another one is recording:
+    # import it without touching that recording's state, active camera or timeline.
+    other_recording = ((isinstance(_record_state, dict) and _record_state["id"] != take_id)
+                       or (_prepared is not None and _prepared["id"] != take_id))
+    active_cameras = {saved_scene: saved_scene.camera for saved_scene in bpy.data.scenes}
     snapshot = message.get("snapshot")
     if snapshot is not None:
         if snapshot.get("format") != 2 or snapshot.get("id") != take_id:
@@ -542,9 +566,14 @@ def _save_take(scene: bpy.types.Scene, message: dict) -> None:
         _add_take_item(scene, camera, smooth_action, start_frame, end_frame, True,
                        original_action.name, take_id,
                         lens_action.name if lens_action else "", bool(message.get("partial")))
-    scene.a2b_take_index = len(scene.a2b_takes) - 1
     scene.frame_end = max(scene.frame_end, end_frame)
-    _record_state = None
+    if other_recording:
+        for saved_scene, active_camera in active_cameras.items():
+            saved_scene.camera = active_camera
+    else:
+        scene.a2b_take_index = len(scene.a2b_takes) - 1  # selects the take and jumps to its start
+    if snapshot is None or (isinstance(_record_state, dict) and _record_state["id"] == take_id):
+        _record_state = None
     scene.a2b_status = f"Saved {name} ({len(sampled)} frames)"
 
 
@@ -778,6 +807,48 @@ def _poll_events() -> float | None:
     return 0.04
 
 
+_carried_pairing: tuple[str, str, int] | None = None
+
+
+@persistent
+def _before_file_load(_filepath) -> None:
+    """End a running recording cleanly: its objects belong to the file being closed."""
+    global _carried_pairing
+    if _server is None:
+        return
+    scene = bpy.context.scene
+    if scene is not None:
+        _carried_pairing = (scene.a2b_token, scene.a2b_host, scene.a2b_port)
+    if isinstance(_record_state, dict) and _record_state["active"]:
+        recorded_scene = _record_state["scene"]
+        _stop_playback(recorded_scene)
+        _record_state["active"] = False
+        _server.broadcast({"type": "record_stopped", "id": _record_state["id"],
+                           "frame": recorded_scene.frame_current, "partial": True,
+                           "server_time_ns": time.monotonic_ns()})
+
+
+@persistent
+def _after_file_load(_filepath) -> None:
+    """Drop references into the closed file and keep the running connection's pairing visible."""
+    global _mapper, _centered_camera, _last_phone, _record_state, _prepared, _last_frame_tick
+    global _carried_pairing
+    if _server is None:
+        return
+    _mapper = None
+    _centered_camera = None
+    _last_phone = None
+    _record_state = None
+    _prepared = None
+    _last_frame_tick = -1
+    scene = bpy.context.scene
+    if scene is not None:
+        if _carried_pairing is not None:
+            scene.a2b_token, scene.a2b_host, scene.a2b_port = _carried_pairing
+        scene.a2b_status = "Another file was opened: press Recenter on the phone"
+    _carried_pairing = None
+
+
 class A2B_Take(bpy.types.PropertyGroup):
     action_name: StringProperty()
     camera_name: StringProperty()
@@ -834,7 +905,9 @@ class A2B_OT_start(bpy.types.Operator):
         scene.a2b_token = token
         scene.a2b_host = _local_ip()
         scene.a2b_status = "Waiting for phone"
-        bpy.app.timers.register(_poll_events, first_interval=0.04)
+        if not bpy.app.timers.is_registered(_poll_events):
+            # Persistent: opening another .blend must not silently stop command processing.
+            bpy.app.timers.register(_poll_events, first_interval=0.04, persistent=True)
         return {"FINISHED"}
 
 
@@ -970,10 +1043,16 @@ def register() -> None:
     bpy.types.Scene.a2b_token = StringProperty(default="")
     bpy.types.Scene.a2b_host = StringProperty(default="")
     bpy.types.Scene.a2b_status = StringProperty(default="Not connected")
+    bpy.app.handlers.load_pre.append(_before_file_load)
+    bpy.app.handlers.load_post.append(_after_file_load)
 
 
 def unregister() -> None:
     global _server, _prepared, _record_state
+    for handlers, handler in ((bpy.app.handlers.load_pre, _before_file_load),
+                              (bpy.app.handlers.load_post, _after_file_load)):
+        if handler in handlers:
+            handlers.remove(handler)
     if isinstance(_record_state, dict) and _record_state["active"]:
         _stop_playback(_record_state["scene"])
     _prepared = None

@@ -7,6 +7,7 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 import action2blender
+from action2blender import blender as addon
 from action2blender.blender import _camera_uuid, _process_event
 
 
@@ -83,6 +84,26 @@ assert scene.camera is camera and abs(scene.camera.data.lens - 100) < 0.01
 scene.a2b_take_index = 1
 scene.frame_set(34)
 assert scene.camera is second_camera and abs(scene.camera.data.lens - 70) < 0.01
+
+# A take left pending on the phone arrives while another take is recording (e.g. after a
+# Wi-Fi reconnect): it is imported, but the running recording, camera and timeline stay put.
+recording_id = "33333333-4444-4555-8666-777777777777"
+recording_camera = bpy.data.objects.new("Recording camera", bpy.data.cameras.new("Recording lens"))
+scene.collection.objects.link(recording_camera)
+scene.camera = recording_camera
+scene.frame_set(20)
+recording_state = {"id": recording_id, "scene": scene, "camera": recording_camera,
+                   "source": source, "snapshot": {"scene": {"playback_end_frame": 40}},
+                   "active": True, "end_frame": None, "started_ns": 0}
+addon._record_state = recording_state
+selected_before = scene.a2b_take_index
+late_id = "44444444-5555-4666-8777-888888888888"
+_process_event(scene, {**take, "id": late_id, "snapshot": {**snapshot, "id": late_id}})
+assert any(item.take_id == late_id for item in scene.a2b_takes)
+assert addon._record_state is recording_state, "pending take import cleared the recording"
+assert scene.camera is recording_camera, scene.camera
+assert scene.frame_current == 20 and scene.a2b_take_index == selected_before
+addon._record_state = None
 
 invalid = {**second_take, "id": "invalid-new", "snapshot": {
     **second_snapshot, "id": "invalid-new",

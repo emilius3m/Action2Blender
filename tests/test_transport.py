@@ -56,6 +56,28 @@ class TransportTests(unittest.TestCase):
             queued["_response"].put({"type": "take_saved", "id": "chunked-take"})
             self.assertEqual(read_line(file)["type"], "take_saved")
 
+    def test_rejects_large_message_before_pairing(self):
+        client, file = self.connect()
+        with client, file:
+            send_line(file, {"type": "hello", "version": 1, "token": "x" * 8000})
+            self.assertEqual(read_line(file)["message"], "Message too large")
+            self.assertEqual(file.readline(), b"")  # connection closed
+        self.assertTrue(self.server.events.empty())
+
+    def test_silent_paired_client_is_dropped(self):
+        from action2blender import transport
+        original = transport.CLIENT_TIMEOUT_SECONDS
+        transport.CLIENT_TIMEOUT_SECONDS = 0.3
+        try:
+            client, file = self.connect()
+            with client, file:
+                send_line(file, {"type": "hello", "version": 1, "token": "test-token", "camera_control": 4})
+                self.assertEqual(read_line(file)["type"], "hello_ok")
+                self.assertEqual(self.server.events.get(timeout=3)["type"], "connection_lost")
+                self.assertIsNone(self.server.client)
+        finally:
+            transport.CLIENT_TIMEOUT_SECONDS = original
+
     def test_take_requires_nonempty_id(self):
         with self.assertRaisesRegex(ValueError, "Invalid take ID"):
             validate_message({"type": "take", "id": "", "events": [{}]})

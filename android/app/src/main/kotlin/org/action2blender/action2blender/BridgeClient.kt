@@ -12,6 +12,7 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /** Gravity-aligned mapping; joystick travel in ARCore world axes. Must match the add-on. */
 private const val CAMERA_CONTROL_VERSION = 4
@@ -33,6 +34,7 @@ class BridgeClient(
     private val pendingFiles = ArrayDeque<File>()
     private var activeTransfer: Transfer? = null
     private val writerExecutor = Executors.newSingleThreadExecutor()
+    private val queuedPose = AtomicReference<JSONObject?>(null)
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
     @Volatile private var endpoint: Triple<String, Int, String>? = null
     @Volatile private var generation = 0
@@ -144,16 +146,25 @@ class BridgeClient(
     }
 
     fun send(message: JSONObject) {
-        writerExecutor.execute {
-            try {
-                writeNow(message)
-            } catch (exc: Exception) {
-                connected = false
-                viewportPort = 0
-                writer = null
-                socket?.close()
-                onState(false, uiText("Connessione persa", exc.message ?: "Connection lost"))
-            }
+        if (message.optString("type") == "pose") {
+            // Live poses matter only while fresh: on a slow link keep one queued and let
+            // newer poses replace it, instead of building up control lag. Takes keep every sample.
+            if (queuedPose.getAndSet(message) != null) return
+            writerExecutor.execute { queuedPose.getAndSet(null)?.let { writeOrDisconnect(it) } }
+            return
+        }
+        writerExecutor.execute { writeOrDisconnect(message) }
+    }
+
+    private fun writeOrDisconnect(message: JSONObject) {
+        try {
+            writeNow(message)
+        } catch (exc: Exception) {
+            connected = false
+            viewportPort = 0
+            writer = null
+            socket?.close()
+            onState(false, uiText("Connessione persa", exc.message ?: "Connection lost"))
         }
     }
 
