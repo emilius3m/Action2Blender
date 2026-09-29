@@ -157,8 +157,9 @@ class PoseMapper:
         self._anchor(phone, self.current)
 
 
-def sample_take(events: list[dict], mapper: PoseMapper, fps: float) -> list[tuple[int, Pose]]:
-    """Return one camera pose per scene frame from active-time phone samples."""
+def sample_take(events: list[dict], mapper: PoseMapper, fps: float,
+                frame_times: list[tuple[int, float]] | None = None) -> list[tuple[int, Pose]]:
+    """Return camera poses on scene frames; supplied frame times follow Blender playback."""
     if not isfinite(fps) or fps <= 0:
         raise ValueError("Frame rate must be positive")
     samples: list[tuple[float, Pose]] = []
@@ -181,11 +182,14 @@ def sample_take(events: list[dict], mapper: PoseMapper, fps: float) -> list[tupl
             raise ValueError("Unknown take event")
     if not samples:
         raise ValueError("Take has no tracked samples")
-    last_frame = round(samples[-1][0] * fps)
+    targets = frame_times if frame_times else [
+        (frame, frame / fps) for frame in range(round(samples[-1][0] * fps) + 1)
+    ]
     result: list[tuple[int, Pose]] = []
     next_sample = 1
-    for frame in range(last_frame + 1):
-        moment = frame / fps
+    for frame, moment in targets:
+        if not isfinite(moment) or moment < 0:
+            raise ValueError("Invalid frame timestamp")
         while next_sample < len(samples) and samples[next_sample][0] < moment:
             next_sample += 1
         if moment <= samples[0][0]:
@@ -201,6 +205,53 @@ def sample_take(events: list[dict], mapper: PoseMapper, fps: float) -> list[tupl
                 _slerp(left_pose.rotation, right_pose.rotation, alpha),
             )
         result.append((frame, pose))
+    return result
+
+
+def sample_optics(events: list[dict], fps: float,
+                  initial: tuple[float, float, float],
+                  frame_times: list[tuple[int, float]] | None = None) -> list[tuple[int, tuple[float, float, float]]]:
+    """Interpolate focal length, focus distance and f-stop onto recorded frames."""
+    if not isfinite(fps) or fps <= 0:
+        raise ValueError("Frame rate must be positive")
+    if not all(isfinite(value) and value > 0 for value in initial):
+        raise ValueError("Invalid initial optics")
+    samples: list[tuple[float, tuple[float, float, float]]] = [(0.0, initial)]
+    last_time = -1.0
+    for event in events:
+        moment = float(event["t"])
+        if not isfinite(moment) or moment < last_time or moment < 0:
+            raise ValueError("Take timestamps must be finite and ordered")
+        last_time = moment
+        values = tuple(float(event.get(key, samples[-1][1][index]))
+                       for index, key in enumerate(("lens", "focus_distance", "fstop")))
+        if not all(isfinite(value) and value > 0 for value in values):
+            raise ValueError("Invalid take optics")
+        if moment == samples[-1][0]:
+            samples[-1] = (moment, values)
+        else:
+            samples.append((moment, values))
+    targets = frame_times if frame_times else [
+        (frame, frame / fps) for frame in range(round(last_time * fps) + 1)
+    ]
+    result = []
+    next_sample = 1
+    for frame, moment in targets:
+        if not isfinite(moment) or moment < 0:
+            raise ValueError("Invalid frame timestamp")
+        while next_sample < len(samples) and samples[next_sample][0] < moment:
+            next_sample += 1
+        if moment <= samples[0][0]:
+            values = samples[0][1]
+        elif next_sample >= len(samples):
+            values = samples[-1][1]
+        else:
+            left_time, left_values = samples[next_sample - 1]
+            right_time, right_values = samples[next_sample]
+            alpha = (moment - left_time) / (right_time - left_time)
+            values = tuple(left + (right - left) * alpha
+                           for left, right in zip(left_values, right_values))
+        result.append((frame, values))
     return result
 
 

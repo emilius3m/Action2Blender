@@ -6,7 +6,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "addon" / "action2blender"
-DESTINATION = ROOT / "dist" / "Action2Blender-addon-0.2.0.zip"
+DESTINATION = ROOT / "dist" / "Action2Blender-addon-0.3.0-dev.1.zip"
 
 
 def main() -> None:

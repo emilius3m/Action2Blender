@@ -2,6 +2,8 @@
 
 Aggiornato il 29 settembre 2026. Questo documento descrive **il codice locale**, non la release scaricabile da GitHub. Dopo una pausa, ricontrollare versioni, percorsi e risultati nel checkout prima di continuare.
 
+**Aggiornamento successivo sul ramo locale `recording-v2`:** app `0.3.0-dev.1+14`, add-on `(0, 3, 0)`, protocollo `camera_control: 4`. Timeline durante Rec, conto opzionale, Action dell'obiettivo, diario progressivo, recupero e riconnessione sono implementati nel codice locale. I dettagli e le prove mancanti sono in [RECORDING_V2_IMPLEMENTATION.md](RECORDING_V2_IMPLEMENTATION.md). Le sezioni che seguono documentano la release 0.2.0 come riferimento storico; non pubblicare la 0.3 senza richiesta espressa.
+
 ## Decisioni confermate
 
 - Nome **Action2Blender**, licenza MIT per il codice originale. App Android in Flutter, acquisizione ARCore e collegamento in Kotlin, add-on Blender in Python.
@@ -31,7 +33,7 @@ Aggiornato il 29 settembre 2026. Questo documento descrive **il codice locale**,
 | Verifiche | `test/`, `tests/`, `android/app/src/test/` | Flutter, Python, Kotlin e Blender senza GUI |
 | Pacchetti | `scripts/package_addon.py`, `scripts/build_release.ps1` | ZIP e APK firmato |
 
-`README.md` (inglese) e `README.it.md` (italiano) guidano l'installazione e l'uso della release 0.2.0 beta 1: vanno aggiornati insieme; `PROJECT_BRIEF.md` conserva le decisioni iniziali ed è **storico**. `CAMERA_DESIGN.md` contiene anche funzioni ancora da realizzare. `RECORDING_V2_DESIGN.md` propone timeline durante Rec, controlli dell'obiettivo e recupero delle take: **è un progetto tecnico, non codice già presente**. Per lo stato effettivo prevalgono questo documento e il codice.
+`README.md` (inglese) e `README.it.md` (italiano) guidano l'installazione e l'uso della release 0.2.0 beta 1: vanno aggiornati insieme al momento di una nuova pubblicazione; `PROJECT_BRIEF.md` conserva le decisioni iniziali ed è **storico**. `CAMERA_DESIGN.md` contiene anche funzioni ancora da realizzare. `RECORDING_V2_DESIGN.md` descrive il progetto tecnico; lo stato della 0.3 locale è in `RECORDING_V2_IMPLEMENTATION.md`.
 
 ## Funzioni presenti nel codice locale
 

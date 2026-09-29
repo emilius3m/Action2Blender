@@ -63,6 +63,16 @@ class _CameraControlPageState extends State<CameraControlPage> {
       _centered = false;
   double _scale = 1.0;
   double _stabilization = 0.25;
+  int _countdownSetting = 0;
+  int _countdownRemaining = 0;
+  int _frame = 0;
+  int _recoverableTakes = 0;
+  bool _preparing = false;
+  double _lensMm = 50.0;
+  double _focusDistance = 10.0;
+  double _fstop = 2.8;
+  double _pinchBaseLens = 50.0;
+  DateTime _lastOpticsSent = DateTime.fromMillisecondsSinceEpoch(0);
   double _moveX = 0, _moveY = 0, _lookX = 0, _lookY = 0, _lift = 0;
 
   @override
@@ -85,6 +95,26 @@ class _CameraControlPageState extends State<CameraControlPage> {
         _recenterPending = _connected && event['recenterPending'] == true;
         _cameraError = event['cameraError'] == true;
         _recording = event['recording'] == true;
+        _preparing = event['preparing'] == true;
+        _countdownRemaining = event['countdown'] is int
+            ? event['countdown'] as int
+            : 0;
+        _countdownSetting = event['countdownSetting'] is int
+            ? event['countdownSetting'] as int
+            : _countdownSetting;
+        _frame = event['frame'] is int ? event['frame'] as int : _frame;
+        _recoverableTakes = event['recoverableTakes'] is int
+            ? event['recoverableTakes'] as int
+            : _recoverableTakes;
+        _lensMm = event['lens'] is num
+            ? (event['lens'] as num).toDouble()
+            : _lensMm;
+        _focusDistance = event['focusDistance'] is num
+            ? (event['focusDistance'] as num).toDouble()
+            : _focusDistance;
+        _fstop = event['fstop'] is num
+            ? (event['fstop'] as num).toDouble()
+            : _fstop;
         _paused = event['paused'] == true;
         if (event['stabilization'] is num) {
           _stabilization = (event['stabilization'] as num)
@@ -106,12 +136,16 @@ class _CameraControlPageState extends State<CameraControlPage> {
       if (!mounted || saved == null) return;
       final host = saved['host'];
       final port = saved['port'];
+      final countdown = saved['countdown'];
       if (_host.text == initialHost && host is String) _host.text = host;
       if (_port.text == initialPort &&
           port is int &&
           port > 0 &&
           port <= 65535) {
         _port.text = port.toString();
+      }
+      if (countdown is int && {0, 3, 5}.contains(countdown)) {
+        setState(() => _countdownSetting = countdown);
       }
     } on MissingPluginException {
       // Settings are unavailable outside Android, including widget tests.
@@ -241,6 +275,95 @@ class _CameraControlPageState extends State<CameraControlPage> {
     _moveX = _moveY = _lookX = _lookY = _lift = 0;
     unawaited(_sendNavigation());
   }
+
+  void _sendOptics({bool force = false}) {
+    if (!_recording) return;
+    final now = DateTime.now();
+    if (!force && now.difference(_lastOpticsSent).inMilliseconds < 50) return;
+    _lastOpticsSent = now;
+    unawaited(
+      _call('setOptics', {
+        'lens': _lensMm,
+        'focus_distance': _focusDistance,
+        'fstop': _fstop,
+      }),
+    );
+  }
+
+  Widget _pinchPreview(Widget child) => GestureDetector(
+    behavior: HitTestBehavior.translucent,
+    onScaleStart: (_) => _pinchBaseLens = _lensMm,
+    onScaleUpdate: (details) {
+      if (!_recording || details.pointerCount < 2) return;
+      setState(
+        () => _lensMm = (_pinchBaseLens * details.scale).clamp(12.0, 200.0),
+      );
+      _sendOptics();
+    },
+    onScaleEnd: (_) => _sendOptics(force: true),
+    child: child,
+  );
+
+  Widget _opticsControls() => _card(uiText('Obiettivo', 'Lens'), [
+    Text(
+      '${uiText('Focale', 'Focal length')}: ${_lensMm.toStringAsFixed(1)} mm',
+    ),
+    Slider(
+      value: _lensMm.clamp(12.0, 200.0),
+      min: 12,
+      max: 200,
+      onChanged: _recording ? (value) => setState(() => _lensMm = value) : null,
+      onChangeEnd: _recording ? (_) => _sendOptics(force: true) : null,
+    ),
+    Text(
+      '${uiText('Distanza di fuoco', 'Focus distance')}: ${_focusDistance.toStringAsFixed(2)} BU',
+    ),
+    Slider(
+      value: _focusDistance.clamp(0.1, 100.0),
+      min: 0.1,
+      max: 100,
+      onChanged: _recording
+          ? (value) => setState(() => _focusDistance = value)
+          : null,
+      onChangeEnd: _recording ? (_) => _sendOptics(force: true) : null,
+    ),
+    Text('${uiText('Diaframma', 'Aperture')}: f/${_fstop.toStringAsFixed(1)}'),
+    Slider(
+      value: _fstop.clamp(1.0, 22.0),
+      min: 1,
+      max: 22,
+      onChanged: _recording ? (value) => setState(() => _fstop = value) : null,
+      onChangeEnd: _recording ? (_) => _sendOptics(force: true) : null,
+    ),
+    Text(
+      uiText(
+        'Pizzica l’anteprima con due dita per cambiare focale.',
+        'Pinch the preview with two fingers to change focal length.',
+      ),
+    ),
+  ]);
+
+  Widget _countdownControls() => Wrap(
+    spacing: 8,
+    children: [0, 3, 5]
+        .map(
+          (seconds) => ChoiceChip(
+            label: Text(
+              seconds == 0
+                  ? uiText('Senza conto', 'No countdown')
+                  : '$seconds s',
+            ),
+            selected: _countdownSetting == seconds,
+            onSelected: _recording || _preparing
+                ? null
+                : (_) {
+                    setState(() => _countdownSetting = seconds);
+                    unawaited(_call('setCountdown', {'seconds': seconds}));
+                  },
+          ),
+        )
+        .toList(),
+  );
 
   Widget _liftButton(IconData icon, double direction, bool enabled) => Listener(
     onPointerDown: enabled
@@ -531,6 +654,12 @@ class _CameraControlPageState extends State<CameraControlPage> {
                   ],
                 ),
                 Text(_status),
+                if (_recording || _preparing)
+                  Text(
+                    _countdownRemaining > 0
+                        ? '${uiText('Tra', 'In')} $_countdownRemaining s'
+                        : '${uiText('Frame', 'Frame')}: $_frame',
+                  ),
                 if (_connected &&
                     !_centered &&
                     !_recenterPending &&
@@ -542,20 +671,35 @@ class _CameraControlPageState extends State<CameraControlPage> {
                     ),
                   ),
                 const SizedBox(height: 18),
+                Text(uiText('Conto alla rovescia', 'Countdown')),
+                _countdownControls(),
+                const SizedBox(height: 8),
                 SizedBox(
                   width: double.infinity,
                   height: 52,
                   child: FilledButton.icon(
                     onPressed:
-                        _recording || (_connected && _tracking && _centered)
+                        _recording ||
+                            _preparing ||
+                            (_connected && _tracking && _centered)
                         ? () => _call(
-                            _recording ? 'stopRecording' : 'startRecording',
+                            _recording || _preparing
+                                ? 'stopRecording'
+                                : 'startRecording',
                           )
                         : null,
                     icon: Icon(
-                      _recording ? Icons.stop : Icons.fiber_manual_record,
+                      _recording || _preparing
+                          ? Icons.stop
+                          : Icons.fiber_manual_record,
                     ),
-                    label: Text(_recording ? 'Stop' : 'Rec'),
+                    label: Text(
+                      _preparing
+                          ? uiText('Annulla', 'Cancel')
+                          : _recording
+                          ? 'Stop'
+                          : 'Rec',
+                    ),
                   ),
                 ),
                 if (_paused)
@@ -572,6 +716,22 @@ class _CameraControlPageState extends State<CameraControlPage> {
                     ),
                   ),
               ]),
+              _opticsControls(),
+              if (_recoverableTakes > 0)
+                _card(uiText('Take recuperate', 'Recovered takes'), [
+                  Text(
+                    uiText(
+                      '$_recoverableTakes riprese interrotte sono conservate sul telefono.',
+                      '$_recoverableTakes interrupted takes are kept on this phone.',
+                    ),
+                  ),
+                  OutlinedButton(
+                    onPressed: _connected
+                        ? () => _call('sendRecoveredTakes')
+                        : null,
+                    child: Text(uiText('Invia a Blender', 'Send to Blender')),
+                  ),
+                ]),
               Padding(
                 padding: const EdgeInsets.all(8),
                 child: Text(
@@ -604,7 +764,7 @@ class _CameraControlPageState extends State<CameraControlPage> {
             return Stack(
               fit: StackFit.expand,
               children: [
-                fullscreenPreview,
+                _pinchPreview(fullscreenPreview),
                 SafeArea(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
@@ -618,7 +778,17 @@ class _CameraControlPageState extends State<CameraControlPage> {
                           ),
                           child: Row(
                             children: [
-                              const Text('Action2Blender · 16:9'),
+                              Text(
+                                _recording && constraints.maxWidth < 1000
+                                    ? 'A2B'
+                                    : 'Action2Blender · 16:9',
+                              ),
+                              if (_recording) ...[
+                                const SizedBox(width: 8),
+                                Text(
+                                  '$_frame · ${_lensMm.toStringAsFixed(0)} mm · f/${_fstop.toStringAsFixed(1)}',
+                                ),
+                              ],
                               const SizedBox(width: 16),
                               Icon(
                                 _connected ? Icons.wifi : Icons.wifi_off,
@@ -745,19 +915,26 @@ class _CameraControlPageState extends State<CameraControlPage> {
                               FilledButton.icon(
                                 onPressed:
                                     _recording ||
+                                        _preparing ||
                                         (_connected && _tracking && _centered)
                                     ? () => _call(
-                                        _recording
+                                        _recording || _preparing
                                             ? 'stopRecording'
                                             : 'startRecording',
                                       )
                                     : null,
                                 icon: Icon(
-                                  _recording
+                                  _recording || _preparing
                                       ? Icons.stop
                                       : Icons.fiber_manual_record,
                                 ),
-                                label: Text(_recording ? 'Stop' : 'Rec'),
+                                label: Text(
+                                  _preparing
+                                      ? uiText('Annulla', 'Cancel')
+                                      : _recording
+                                      ? 'Stop'
+                                      : 'Rec',
+                                ),
                               ),
                             ],
                           ),
@@ -804,6 +981,33 @@ class _CameraControlPageState extends State<CameraControlPage> {
                                     ),
                                   ),
                                   connection,
+                                  _card(
+                                    uiText('Conto alla rovescia', 'Countdown'),
+                                    [_countdownControls()],
+                                  ),
+                                  _opticsControls(),
+                                  if (_recoverableTakes > 0)
+                                    _card(
+                                      uiText(
+                                        'Take recuperate',
+                                        'Recovered takes',
+                                      ),
+                                      [
+                                        Text('$_recoverableTakes'),
+                                        OutlinedButton(
+                                          onPressed: _connected
+                                              ? () =>
+                                                    _call('sendRecoveredTakes')
+                                              : null,
+                                          child: Text(
+                                            uiText(
+                                              'Invia a Blender',
+                                              'Send to Blender',
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                 ],
                               ),
                             ),
@@ -821,7 +1025,7 @@ class _CameraControlPageState extends State<CameraControlPage> {
                 padding: const EdgeInsets.all(12),
                 children: _connected
                     ? [
-                        preview,
+                        _pinchPreview(preview),
                         if (_centered)
                           _navigationControls(_tracking && !_paused),
                         recording,

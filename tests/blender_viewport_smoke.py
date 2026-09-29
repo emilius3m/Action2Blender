@@ -30,7 +30,7 @@ assert bpy.ops.a2b.start() == {"FINISHED"}
 assert scene.render.resolution_x * 9 == scene.render.resolution_y * 16
 with socket.create_connection(("127.0.0.1", scene.a2b_port), timeout=2) as control:
     control.sendall(
-        (json.dumps({"type": "hello", "version": 1, "token": scene.a2b_token, "camera_control": 3}) + "\n").encode()
+        (json.dumps({"type": "hello", "version": 1, "token": scene.a2b_token, "camera_control": 4}) + "\n").encode()
     )
     greeting = json.loads(control.makefile("rb").readline())
 assert greeting["type"] == "hello_ok"

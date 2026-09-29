@@ -5,7 +5,8 @@ import secrets
 import socket
 import tempfile
 import time
-from math import atan, sin
+import uuid
+from math import atan, isfinite, sin
 from pathlib import Path
 
 import bpy
@@ -13,7 +14,7 @@ import bpy.utils.previews
 from mathutils import Vector
 from bpy.props import BoolProperty, CollectionProperty, FloatProperty, IntProperty, StringProperty
 
-from .core import Pose, PoseMapper, map_navigation, sample_take, stabilize_take
+from .core import Pose, PoseMapper, map_navigation, sample_optics, sample_take, stabilize_take
 from .pairing import pairing_uri, qr_png
 from .transport import PoseServer
 from .viewport import ViewportServer, encode_rgba_png
@@ -31,7 +32,9 @@ _capture_busy = False
 _mapper: PoseMapper | None = None
 _centered_camera: bpy.types.Object | None = None
 _last_phone: Pose | None = None
-_record_state: tuple[Pose, Pose, float, int, bpy.types.Object] | None = None
+_record_state: tuple[Pose, Pose, float, int, bpy.types.Object] | dict | None = None
+_prepared: dict | None = None
+_last_frame_tick = -1
 _qr_preview = None
 _qr_path: Path | None = None
 _qr_key: tuple[str, int, str] | None = None
@@ -46,6 +49,80 @@ def _apply_pose(camera: bpy.types.Object, pose: Pose) -> None:
     camera.location = pose.position
     camera.rotation_mode = "QUATERNION"
     camera.rotation_quaternion = (pose.rotation[3], *pose.rotation[:3])
+
+
+def _camera_uuid(camera: bpy.types.Object) -> str:
+    if not camera.get("a2b_camera_uuid"):
+        camera["a2b_camera_uuid"] = str(uuid.uuid4())
+    return camera["a2b_camera_uuid"]
+
+
+def _focus_distance(camera: bpy.types.Object) -> float:
+    target = camera.data.dof.focus_object
+    if target is None:
+        return camera.data.dof.focus_distance
+    local = camera.matrix_world.inverted() @ target.matrix_world.translation
+    return max(0.01, -local.z)
+
+
+def _snapshot(scene: bpy.types.Scene, camera: bpy.types.Object, phone: Pose,
+              scale: float, take_id: str) -> dict:
+    pose = _camera_pose(camera)
+    lens = camera.data
+    return {
+        "format": 2, "id": take_id,
+        "scene": {"name": scene.name, "take_start_frame": scene.frame_current,
+                  "playback_end_frame": scene.frame_preview_end if scene.use_preview_range else scene.frame_end,
+                  "fps": scene.render.fps, "fps_base": scene.render.fps_base,
+                  "resolution": [scene.render.resolution_x, scene.render.resolution_y],
+                  "pixel_aspect": [scene.render.pixel_aspect_x, scene.render.pixel_aspect_y]},
+        "camera": {"source_uuid": _camera_uuid(camera), "name": camera.name,
+                   "position": list(pose.position), "rotation_xyzw": list(pose.rotation),
+                    "lens_mm": lens.lens, "focus_distance_bu": _focus_distance(camera),
+                   "fstop": lens.dof.aperture_fstop, "sensor_fit": lens.sensor_fit,
+                   "sensor_width_mm": lens.sensor_width, "sensor_height_mm": lens.sensor_height},
+        "tracking": {"phone_anchor": {"p": list(phone.position), "q": list(phone.rotation)},
+                     "scale": scale},
+    }
+
+
+def _take_camera(scene: bpy.types.Scene, source: bpy.types.Object, take_id: str) -> bpy.types.Object:
+    lens = source.data.copy()
+    lens.animation_data_clear()
+    lens.dof.focus_distance = _focus_distance(source)
+    lens.dof.focus_object = None
+    camera = bpy.data.objects.new("A2B Take Camera", lens)
+    _camera_collection(scene).objects.link(camera)
+    camera.matrix_world = source.matrix_world.copy()
+    camera.rotation_mode = "QUATERNION"
+    camera["a2b_camera_uuid"] = str(uuid.uuid4())
+    camera["a2b_take_id"] = take_id
+    scene.camera = camera
+    return camera
+
+
+def _playback_window(scene: bpy.types.Scene):
+    return next((window for window in bpy.context.window_manager.windows
+                 if window.scene == scene), None)
+
+
+def _start_playback(scene: bpy.types.Scene) -> None:
+    window = _playback_window(scene)
+    if window is None:
+        raise ValueError("Open a Blender window to play the timeline")
+    with bpy.context.temp_override(window=window, screen=window.screen):
+        if window.screen.is_animation_playing:
+            bpy.ops.screen.animation_cancel(restore_frame=False)
+        result = bpy.ops.screen.animation_play(sync=True)
+    if "FINISHED" not in result:
+        raise ValueError("Blender could not start timeline playback")
+
+
+def _stop_playback(scene: bpy.types.Scene) -> None:
+    window = _playback_window(scene)
+    if window is not None and window.screen.is_animation_playing:
+        with bpy.context.temp_override(window=window, screen=window.screen):
+            bpy.ops.screen.animation_cancel(restore_frame=False)
 
 
 def _view_space(scene: bpy.types.Scene):
@@ -263,6 +340,13 @@ def _select_take(scene: bpy.types.Scene, index: int) -> None:
     camera.animation_data.action = action
     if len(action.slots):
         camera.animation_data.action_slot = action.slots[0]
+    if item.lens_action_name:
+        lens_action = bpy.data.actions.get(item.lens_action_name)
+        if lens_action is not None:
+            camera.data.animation_data_create()
+            camera.data.animation_data.action = lens_action
+            if len(lens_action.slots):
+                camera.data.animation_data.action_slot = lens_action.slots[0]
     scene.camera = camera
     scene.frame_set(item.start_frame)
     scene.a2b_status = f"Selected {item.name}"
@@ -285,9 +369,30 @@ def _write_take_action(camera: bpy.types.Object, name: str, sampled: list[tuple[
     return action
 
 
+def _write_lens_action(camera: bpy.types.Object, name: str,
+                       sampled: list[tuple[int, tuple[float, float, float]]],
+                       start_frame: int) -> bpy.types.Action:
+    action = bpy.data.actions.new(name=name)
+    action.use_fake_user = True
+    lens = camera.data
+    lens.animation_data_create()
+    lens.animation_data.action = action
+    lens.dof.use_dof = True
+    for offset, (focal, focus, fstop) in sampled:
+        frame = start_frame + offset
+        lens.lens = focal
+        lens.dof.focus_distance = focus
+        lens.dof.aperture_fstop = fstop
+        lens.keyframe_insert(data_path="lens", frame=frame, group="Action2Blender")
+        lens.keyframe_insert(data_path="dof.focus_distance", frame=frame, group="Action2Blender")
+        lens.keyframe_insert(data_path="dof.aperture_fstop", frame=frame, group="Action2Blender")
+    return action
+
+
 def _add_take_item(scene: bpy.types.Scene, camera: bpy.types.Object, action: bpy.types.Action,
                    start_frame: int, end_frame: int, stabilized: bool,
-                   source_action_name: str = "", take_id: str = "") -> None:
+                   source_action_name: str = "", take_id: str = "",
+                    lens_action_name: str = "", is_partial: bool = False) -> None:
     item = scene.a2b_takes.add()
     item.name = action.name
     item.action_name = action.name
@@ -297,6 +402,8 @@ def _add_take_item(scene: bpy.types.Scene, camera: bpy.types.Object, action: bpy
     item.is_stabilized = stabilized
     item.source_action_name = source_action_name
     item.take_id = take_id
+    item.lens_action_name = lens_action_name
+    item.is_partial = is_partial
 
 
 def _sample_action(scene: bpy.types.Scene, camera: bpy.types.Object, action: bpy.types.Action,
@@ -335,11 +442,88 @@ def _save_take(scene: bpy.types.Scene, message: dict) -> None:
     ):
         scene.a2b_status = "Take already received"
         return
-    if _record_state is None:
-        raise ValueError("No recording start received")
-    anchor, initial, scale, start_frame, camera = _record_state
-    fps = scene.render.fps / scene.render.fps_base
-    sampled = sample_take(message["events"], PoseMapper(anchor, initial, scale), fps)
+    snapshot = message.get("snapshot")
+    if snapshot is not None:
+        if snapshot.get("format") != 2 or snapshot.get("id") != take_id:
+            raise ValueError("Invalid take snapshot")
+        camera_state = snapshot["camera"]
+        tracking_state = snapshot["tracking"]
+        timeline_state = snapshot["scene"]
+        scene = bpy.data.scenes.get(timeline_state.get("name", "")) or scene
+        anchor = Pose.from_json(tracking_state["phone_anchor"])
+        initial = Pose.from_json({"p": camera_state["position"],
+                                  "q": camera_state["rotation_xyzw"]})
+        scale = float(tracking_state["scale"])
+        start_frame = int(timeline_state["take_start_frame"])
+        fps = float(timeline_state["fps"]) / float(timeline_state["fps_base"])
+        end_limit = int(timeline_state["playback_end_frame"])
+        initial_optics = tuple(float(camera_state[key]) for key in
+                               ("lens_mm", "focus_distance_bu", "fstop"))
+        sensor_width = float(camera_state.get("sensor_width_mm", 36.0))
+        sensor_height = float(camera_state.get("sensor_height_mm", 24.0))
+        if (not isfinite(scale) or not 0.01 <= scale <= 100 or
+                not isfinite(fps) or not 1 <= fps <= 240 or
+                start_frame < 0 or end_limit < start_frame or
+                end_limit - start_frame > 120_000 or
+                not 1 <= initial_optics[0] <= 500 or
+                not 0.01 <= initial_optics[1] <= 100_000 or
+                not 0.1 <= initial_optics[2] <= 64 or
+                not isfinite(sensor_width) or not 1 <= sensor_width <= 100 or
+                not isfinite(sensor_height) or not 1 <= sensor_height <= 100 or
+                camera_state.get("sensor_fit", "AUTO") not in {"AUTO", "HORIZONTAL", "VERTICAL"}):
+            raise ValueError("Invalid take camera or timeline settings")
+        markers = message.get("frame_markers", [])
+        if not isinstance(markers, list) or len(markers) > 120_001:
+            raise ValueError("Invalid frame markers")
+        frame_times = []
+        previous_frame = start_frame - 1
+        previous_time = -1.0
+        for marker in markers:
+            frame = int(marker["frame"])
+            moment = float(marker["t"])
+            if (frame <= previous_frame or frame > end_limit or not isfinite(moment) or
+                    moment < previous_time or moment < 0):
+                raise ValueError("Frame markers must be ordered and inside the take range")
+            frame_times.append((frame - start_frame, moment))
+            previous_frame, previous_time = frame, moment
+        if frame_times and frame_times[0][0] > 0:
+            frame_times.insert(0, (0, 0.0))
+        elif frame_times:
+            frame_times[0] = (0, 0.0)
+        frame_times = frame_times or None
+        if not frame_times and float(message["events"][-1]["t"]) * fps > 120_000:
+            raise ValueError("Take is too long")
+        sampled = sample_take(message["events"], PoseMapper(anchor, initial, scale), fps, frame_times)
+        optical_samples = sample_optics(message["events"], fps, initial_optics, frame_times)
+        camera = next((obj for obj in bpy.data.objects if obj.type == "CAMERA"
+                       and obj.get("a2b_take_id") == take_id), None)
+        if camera is None:
+            source = next((obj for obj in bpy.data.objects if obj.type == "CAMERA"
+                           and obj.get("a2b_camera_uuid") == camera_state["source_uuid"]), None)
+            if source is None:
+                lens = bpy.data.cameras.new("A2B Recovered Lens")
+                camera = bpy.data.objects.new("A2B Recovered Camera", lens)
+                _camera_collection(scene).objects.link(camera)
+                camera["a2b_take_id"] = take_id
+                camera["a2b_camera_uuid"] = str(uuid.uuid4())
+            else:
+                camera = _take_camera(scene, source, take_id)
+        _apply_pose(camera, initial)
+        lens = camera.data
+        lens.lens, lens.dof.focus_distance, lens.dof.aperture_fstop = initial_optics
+        lens.sensor_fit = camera_state.get("sensor_fit", "AUTO")
+        lens.sensor_width = sensor_width
+        lens.sensor_height = sensor_height
+        scene.camera = camera
+    else:
+        if _record_state is None:
+            raise ValueError("No recording start received")
+        if isinstance(_record_state, dict):
+            raise ValueError("Take snapshot required")
+        anchor, initial, scale, start_frame, camera = _record_state
+        fps = scene.render.fps / scene.render.fps_base
+        initial_optics = None
+        sampled = sample_take(message["events"], PoseMapper(anchor, initial, scale), fps)
     stabilized = None
     if len(sampled) >= 3 and scene.a2b_auto_stabilize and scene.a2b_stabilization_strength > 0:
         stabilized = stabilize_take(sampled, fps, scene.a2b_stabilization_strength)
@@ -347,30 +531,133 @@ def _save_take(scene: bpy.types.Scene, message: dict) -> None:
     name = f"A2B Take {take_number:03d}"
     end_frame = start_frame + sampled[-1][0]
     original_action = _write_take_action(camera, f"{name} - Original", sampled, start_frame)
+    lens_action = None
+    if initial_optics is not None:
+        lens_action = _write_lens_action(camera, f"{name} - Lens", optical_samples, start_frame)
     _add_take_item(scene, camera, original_action, start_frame, end_frame, False,
-                   take_id=take_id)
+                   take_id=take_id, lens_action_name=lens_action.name if lens_action else "",
+                   is_partial=bool(message.get("partial")))
     if stabilized is not None:
         smooth_action = _write_take_action(camera, f"{name} - Stabilized", stabilized, start_frame)
         _add_take_item(scene, camera, smooth_action, start_frame, end_frame, True,
-                       original_action.name, take_id)
+                       original_action.name, take_id,
+                        lens_action.name if lens_action else "", bool(message.get("partial")))
     scene.a2b_take_index = len(scene.a2b_takes) - 1
     scene.frame_end = max(scene.frame_end, end_frame)
     _record_state = None
     scene.a2b_status = f"Saved {name} ({len(sampled)} frames)"
 
 
-def _process_event(scene: bpy.types.Scene, message: dict) -> None:
-    global _mapper, _centered_camera, _last_phone, _record_state
+def _process_event(scene: bpy.types.Scene, message: dict) -> dict | None:
+    global _mapper, _centered_camera, _last_phone, _record_state, _prepared, _last_frame_tick
     kind = message["type"]
+    if kind == "connection_lost":
+        _prepared = None
+        if isinstance(_record_state, dict) and _record_state["active"]:
+            _stop_playback(_record_state["scene"])
+            _record_state["active"] = False
+            _record_state["end_frame"] = _record_state["scene"].frame_current
+        scene.a2b_status = "Phone disconnected; recording paused"
+        return
     if kind == "take":
         _save_take(scene, message)
         return
     if kind == "pause":
+        if isinstance(_record_state, dict) and _record_state["active"]:
+            _stop_playback(_record_state["scene"])
+            _record_state["active"] = False
         scene.a2b_status = "Tracking lost: recording paused"
         return
     if kind == "scale":
         scene.a2b_scale = float(message["value"])
         return
+    if kind == "record_stop":
+        if not isinstance(_record_state, dict) or _record_state["id"] != message["id"]:
+            raise ValueError("Recording ID does not match")
+        recorded_scene = _record_state["scene"]
+        _stop_playback(recorded_scene)
+        _record_state["active"] = False
+        _record_state["end_frame"] = recorded_scene.frame_current
+        scene.a2b_status = "Recording stopped; waiting for take"
+        return {"type": "record_stopped", "id": message["id"], "frame": recorded_scene.frame_current,
+                "server_time_ns": time.monotonic_ns()}
+    if kind == "record_cancel":
+        if _prepared is not None and _prepared["id"] == message["id"]:
+            _prepared = None
+        elif isinstance(_record_state, dict) and _record_state["id"] == message["id"]:
+            recorded_scene = _record_state["scene"]
+            _stop_playback(recorded_scene)
+            camera = _record_state["camera"]
+            recorded_scene.camera = _record_state["source"]
+            lens = camera.data
+            bpy.data.objects.remove(camera, do_unlink=True)
+            bpy.data.cameras.remove(lens, do_unlink=True)
+            _record_state = None
+            _mapper = None
+            _centered_camera = None
+        scene.a2b_status = "Recording cancelled"
+        return
+    if kind == "optics":
+        if not isinstance(_record_state, dict):
+            raise ValueError("Start recording before changing the lens")
+        lens = _record_state["camera"].data
+        lens.lens = float(message["lens"])
+        lens.dof.focus_distance = float(message["focus_distance"])
+        lens.dof.aperture_fstop = float(message["fstop"])
+        lens.dof.use_dof = True
+        return
+    if kind == "record_prepare":
+        camera = scene.camera
+        if camera is None or camera.type != "CAMERA" or camera.data.type != "PERSP":
+            raise ValueError("Select a perspective camera in Blender")
+        if camera.parent is not None or any(not constraint.mute and constraint.influence > 0
+                                            for constraint in camera.constraints):
+            raise ValueError("Choose a camera without a parent or active constraints")
+        if _record_state is not None:
+            raise ValueError("Finish the current take before recording")
+        if _playback_window(scene) is None:
+            raise ValueError("Open a Blender window to play the timeline")
+        if (scene.frame_preview_end if scene.use_preview_range else scene.frame_end) <= scene.frame_current:
+            raise ValueError("Move the timeline before its end frame to record")
+        _stop_playback(scene)
+        phone = Pose.from_json(message)
+        scale = float(message.get("scale", scene.a2b_scale))
+        snapshot = _snapshot(scene, camera, phone, scale, message["id"])
+        _prepared = {"id": message["id"], "source": camera,
+                     "snapshot": snapshot, "scale": scale}
+        scene.a2b_status = "Ready for recording countdown"
+        return {"type": "record_ready", "id": message["id"], "snapshot": snapshot}
+    if kind == "record_go":
+        if _prepared is None or _prepared["id"] != message["id"]:
+            raise ValueError("Prepare the recording before starting")
+        source = _prepared["source"]
+        phone = Pose.from_json(message)
+        snapshot = _prepared["snapshot"]
+        camera = _take_camera(scene, source, message["id"])
+        snapshot["tracking"]["phone_anchor"] = {"p": list(phone.position),
+                                                   "q": list(phone.rotation)}
+        snapshot["camera"]["take_uuid"] = _camera_uuid(camera)
+        try:
+            _start_playback(scene)
+        except Exception:
+            scene.camera = source
+            lens = camera.data
+            bpy.data.objects.remove(camera, do_unlink=True)
+            bpy.data.cameras.remove(lens, do_unlink=True)
+            raise
+        anchor = _camera_pose(camera)
+        _mapper = PoseMapper(phone, anchor, _prepared["scale"])
+        _centered_camera = camera
+        _record_state = {"id": message["id"], "scene": scene, "camera": camera, "source": source,
+                         "snapshot": snapshot,
+                         "active": True, "end_frame": None,
+                         "started_ns": time.monotonic_ns()}
+        _last_frame_tick = -1
+        _prepared = None
+        scene.a2b_status = "Recording with timeline playback"
+        return {"type": "record_started", "id": message["id"],
+                "snapshot": snapshot, "frame": scene.frame_current,
+                "server_time_ns": time.monotonic_ns()}
     if kind == "create_camera":
         phone = Pose.from_json(message)
         camera = _create_camera(scene, message["mode"])
@@ -396,8 +683,17 @@ def _process_event(scene: bpy.types.Scene, message: dict) -> None:
         elif _mapper is None or camera != _centered_camera:
             scene.a2b_status = "Press Recenter on the phone"
         elif kind == "resume":
+            if isinstance(_record_state, dict) and message.get("id") != _record_state["id"]:
+                raise ValueError("Recording ID does not match")
+            if isinstance(_record_state, dict) and scene is not _record_state["scene"]:
+                raise ValueError("Return to the recording scene before resuming")
             _mapper.reanchor(phone)
+            if isinstance(_record_state, dict) and not _record_state["active"]:
+                _start_playback(scene)
+                _record_state["active"] = True
             scene.a2b_status = "Tracking resumed"
+            return {"type": "record_resumed", "id": message.get("id", ""),
+                    "frame": scene.frame_current, "server_time_ns": time.monotonic_ns()}
         else:
             _mapper.scale = scene.a2b_scale
             _apply_pose(camera, map_navigation(_mapper, phone, message))
@@ -414,11 +710,34 @@ def _process_event(scene: bpy.types.Scene, message: dict) -> None:
 
 
 def _poll_events() -> float | None:
+    global _last_frame_tick
     if _server is None:
         return None
     scene = bpy.context.scene
     if scene is None:
         return 0.04
+    if isinstance(_record_state, dict) and _record_state["active"] and scene is not _record_state["scene"]:
+        recorded_scene = _record_state["scene"]
+        _stop_playback(recorded_scene)
+        _record_state["active"] = False
+        _record_state["end_frame"] = recorded_scene.frame_current
+        _server.broadcast({"type": "record_stopped", "id": _record_state["id"],
+                           "frame": recorded_scene.frame_current, "partial": True,
+                           "server_time_ns": time.monotonic_ns()})
+    if isinstance(_record_state, dict) and _record_state["active"]:
+        frame = scene.frame_current
+        if frame != _last_frame_tick:
+            _last_frame_tick = frame
+            _server.broadcast({"type": "frame_tick", "id": _record_state["id"],
+                               "frame": frame, "server_time_ns": time.monotonic_ns()})
+        end_frame = _record_state["snapshot"]["scene"]["playback_end_frame"]
+        window = _playback_window(scene)
+        if frame >= end_frame or (window is not None and not window.screen.is_animation_playing):
+            _stop_playback(scene)
+            _record_state["active"] = False
+            _record_state["end_frame"] = frame
+            _server.broadcast({"type": "record_stopped", "id": _record_state["id"],
+                                "frame": frame, "server_time_ns": time.monotonic_ns()})
     if (
         _viewport_server is not None
         and _viewport_server.frames.active_width() is not None
@@ -440,9 +759,11 @@ def _poll_events() -> float | None:
             break
         response_queue = message.pop("_response", None)
         try:
-            _process_event(scene, message)
+            result = _process_event(scene, message)
             if response_queue is not None:
-                if message["type"] in {"recenter", "create_camera"}:
+                if result is not None:
+                    response_queue.put(result)
+                elif message["type"] in {"recenter", "create_camera"}:
                     response_queue.put({"type": "recenter_ok", "camera": scene.camera.name})
                 else:
                     response_queue.put({"type": "take_saved", "id": message["id"]})
@@ -465,6 +786,8 @@ class A2B_Take(bpy.types.PropertyGroup):
     is_stabilized: BoolProperty(default=False)
     source_action_name: StringProperty()
     take_id: StringProperty()
+    lens_action_name: StringProperty()
+    is_partial: BoolProperty(default=False)
 
 
 class A2B_OT_start(bpy.types.Operator):
@@ -473,7 +796,7 @@ class A2B_OT_start(bpy.types.Operator):
 
     def execute(self, context: bpy.types.Context):
         global _server, _viewport_server, _capture_handler
-        global _mapper, _centered_camera, _last_phone, _record_state
+        global _mapper, _centered_camera, _last_phone, _record_state, _prepared
         global _last_capture, _capture_interval
         if _server is not None:
             return {"CANCELLED"}
@@ -501,6 +824,7 @@ class A2B_OT_start(bpy.types.Operator):
         _centered_camera = None
         _last_phone = None
         _record_state = None
+        _prepared = None
         if scene.a2b_widescreen:
             width = max(16, round(scene.render.resolution_x / 16) * 16)
             scene.render.resolution_x = width
@@ -519,7 +843,11 @@ class A2B_OT_stop(bpy.types.Operator):
     bl_label = "Stop phone connection"
 
     def execute(self, context: bpy.types.Context):
-        global _server
+        global _server, _prepared, _record_state
+        if isinstance(_record_state, dict) and _record_state["active"]:
+            _stop_playback(_record_state["scene"])
+        _prepared = None
+        _record_state = None
         if _server is not None:
             _server.stop()
             _server = None
@@ -573,7 +901,8 @@ class A2B_OT_stabilize_take(bpy.types.Operator):
             action = _write_take_action(camera, f"{base_name} - Stabilized",
                                         smoothed, item.start_frame)
             _add_take_item(scene, camera, action, item.start_frame, item.end_frame,
-                           True, source.name, item.take_id)
+                           True, source.name, item.take_id, item.lens_action_name,
+                           item.is_partial)
             scene.a2b_take_index = len(scene.a2b_takes) - 1
             scene.a2b_status = f"Stabilized: {action.name}"
             return {"FINISHED"}
@@ -616,7 +945,8 @@ class A2B_PT_panel(bpy.types.Panel):
         layout.label(text="Recorded takes")
         for index, take in enumerate(scene.a2b_takes):
             row = layout.row()
-            row.operator("a2b.select_take", text=take.name, depress=index == scene.a2b_take_index).index = index
+            label = f"{take.name} (partial)" if take.is_partial else take.name
+            row.operator("a2b.select_take", text=label, depress=index == scene.a2b_take_index).index = index
             row.label(text=f"{take.start_frame}–{take.end_frame}")
         stabilize_row = layout.row()
         stabilize_row.enabled = 0 <= scene.a2b_take_index < len(scene.a2b_takes)
@@ -643,7 +973,11 @@ def register() -> None:
 
 
 def unregister() -> None:
-    global _server
+    global _server, _prepared, _record_state
+    if isinstance(_record_state, dict) and _record_state["active"]:
+        _stop_playback(_record_state["scene"])
+    _prepared = None
+    _record_state = None
     if _server is not None:
         _server.stop()
         _server = None

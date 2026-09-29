@@ -7,6 +7,8 @@ import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
@@ -21,6 +23,8 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 import java.io.File
+import java.util.UUID
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -35,7 +39,20 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
     @Volatile private var surfaceHeight = 1
     private lateinit var glView: GLSurfaceView
     private lateinit var bridge: BridgeClient
-    private val recorder = TakeRecorder()
+    private lateinit var recorder: TakeRecorder
+    private val countdownHandler = Handler(Looper.getMainLooper())
+    private val ioExecutor = Executors.newSingleThreadExecutor()
+    private var countdownSeconds = 0
+    private var countdownRemaining = 0
+    private var pendingTakeId: String? = null
+    @Volatile private var resumePending = false
+    @Volatile private var finalizing = false
+    private var currentFrame = 0
+    private var lensMm = 50.0
+    private var focusDistance = 10.0
+    private var fstop = 2.8
+    private var recoverableTakes = 0
+    private var lastSessionId = ""
     private val navigation = NavigationController()
     private val poseStabilizer = PoseStabilizer()
     private val latestPose = AtomicReference<PhonePose?>()
@@ -58,18 +75,39 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        recorder = TakeRecorder(filesDir)
+        countdownSeconds = getSharedPreferences("action2blender", MODE_PRIVATE)
+            .getInt("countdown_seconds", 0).takeIf { it in setOf(0, 3, 5) } ?: 0
+        recoverableTakes = filesDir.listFiles { file ->
+            file.name.startsWith("pending_") && file.name.endsWith(".json") &&
+                runCatching { JSONObject(file.readText()).optBoolean("partial") }.getOrDefault(false)
+        }?.size ?: 0
         stabilizationStrength = getSharedPreferences("action2blender", MODE_PRIVATE)
             .getFloat("live_stabilization", 0.25f).coerceIn(0f, 1f)
         bridge = BridgeClient(
             onState = { connected, text ->
                 if (connected) {
-                    centered = false
+                    val sameSession = bridge.sessionId == lastSessionId
+                    centered = recorder.isPaused() && sameSession
+                    if (!sameSession && recorder.isRecording()) {
+                        recorder.pause(System.nanoTime())
+                        finishRecording(partial = true)
+                    } else if (pendingTakeId != null && !recorder.isRecording()) {
+                        bridge.send(JSONObject().put("type", "record_cancel").put("id", pendingTakeId))
+                        pendingTakeId = null
+                        countdownRemaining = 0
+                    }
+                    lastSessionId = bridge.sessionId
                     recenterPending = false
                     bridgeIssue = null
                     navigation.stop()
                     sendScale()
                     resendPendingTakes()
                 } else {
+                    resumePending = false
+                    if (recorder.pause(System.nanoTime())) {
+                        publish(uiText("Rete persa: ripresa in pausa", "Network lost: recording paused"))
+                    }
                     centered = false
                     recenterPending = false
                     bridgeIssue = text
@@ -78,7 +116,11 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                 publish(text)
             },
             onTakeAcknowledged = { id ->
-                File(filesDir, "pending_$id.json").delete()
+                val file = File(filesDir, "pending_$id.json")
+                if (file.exists() && runCatching { JSONObject(file.readText()).optBoolean("partial") }.getOrDefault(false)) {
+                    recoverableTakes = (recoverableTakes - 1).coerceAtLeast(0)
+                }
+                file.delete()
                 bridgeIssue = null
                 publish(uiText("Take salvata in Blender", "Take saved in Blender"))
             },
@@ -89,13 +131,78 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                 publish(uiText("Camera pronta: $camera", "Camera ready: $camera"))
             },
             onCommandError = { command, message ->
-                if (command != "take") {
+                if (command in setOf("record_prepare", "record_go")) {
+                    pendingTakeId = null
+                    countdownRemaining = 0
+                }
+                if (command == "resume") resumePending = false
+                if (command !in setOf("take", "record_prepare", "record_go", "record_stop", "resume")) {
                     centered = false
                     recenterPending = false
                 }
                 val issue = "Blender: $message"
                 bridgeIssue = issue
                 publish(issue)
+            },
+            onRecordingReady = { response ->
+                val id = response.optString("id")
+                if (id == pendingTakeId) {
+                    val camera = response.optJSONObject("snapshot")?.optJSONObject("camera")
+                    lensMm = camera?.optDouble("lens_mm", 50.0) ?: 50.0
+                    focusDistance = camera?.optDouble("focus_distance_bu", 10.0) ?: 10.0
+                    fstop = camera?.optDouble("fstop", 2.8) ?: 2.8
+                    runOnUiThread { beginCountdown(id) }
+                }
+            },
+            onRecordingStarted = { response ->
+                val id = response.optString("id")
+                val pose = latestPose.get()
+                if (id == pendingTakeId && (!activityResumed || !tracking || pose == null)) {
+                    bridge.send(JSONObject().put("type", "record_cancel").put("id", id))
+                    pendingTakeId = null
+                    countdownRemaining = 0
+                    publish(uiText("Avvio ripresa annullato", "Recording start cancelled"))
+                } else if (id == pendingTakeId && pose != null) {
+                    try {
+                        val now = bridge.phoneTimeForServer(response.optLong("server_time_ns"))
+                        recorder.start(now, pose, id, response.getJSONObject("snapshot"))
+                        currentFrame = response.optInt("frame")
+                        recorder.addFrameMarker(now, currentFrame)
+                        centered = true
+                        publish(uiText("Registrazione e timeline in corso", "Recording with timeline playback"))
+                    } catch (exc: Exception) {
+                        bridge.send(JSONObject().put("type", "record_cancel").put("id", id))
+                        pendingTakeId = null
+                        publish(uiText("Impossibile salvare la ripresa sul telefono", "Could not save recording on phone"))
+                    }
+                }
+            },
+            onRecordingStopped = { response ->
+                val id = response.optString("id")
+                if (id == pendingTakeId) {
+                    recorder.addFrameMarker(bridge.phoneTimeForServer(response.optLong("server_time_ns")),
+                        response.optInt("frame", currentFrame))
+                    finishRecording(partial = response.optBoolean("partial"))
+                }
+            },
+            onRecordingResumed = { response ->
+                if (resumePending && response.optString("id") == pendingTakeId) {
+                    resumePending = false
+                    val pose = latestPose.get()
+                    val now = bridge.phoneTimeForServer(response.optLong("server_time_ns"))
+                    if (pose != null && recorder.resume(now, pose)) {
+                        currentFrame = response.optInt("frame", currentFrame)
+                        recorder.addFrameMarker(now, currentFrame)
+                        publish(uiText("Registrazione ripresa senza salto", "Recording resumed without a jump"))
+                    }
+                }
+            },
+            onFrameTick = { response ->
+                if (response.optString("id") == pendingTakeId && recorder.isRecording()) {
+                    currentFrame = response.optInt("frame")
+                    recorder.addFrameMarker(bridge.phoneTimeForServer(response.optLong("server_time_ns")), currentFrame)
+                    publish(statusText)
+                }
             },
         )
         glView = GLSurfaceView(this).apply {
@@ -108,6 +215,74 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
             glView,
             FrameLayout.LayoutParams(2, 2, Gravity.BOTTOM or Gravity.END),
         )
+        ioExecutor.execute {
+            try {
+                recorder.recover().forEach { take ->
+                    if (!File(filesDir, "pending_${take.getString("id")}.json").exists()) {
+                        recorder.saveRecovered(take)
+                    }
+                }
+                recoverableTakes = filesDir.listFiles { file ->
+                    file.name.startsWith("pending_") && file.name.endsWith(".json") &&
+                        runCatching { JSONObject(file.readText()).optBoolean("partial") }.getOrDefault(false)
+                }?.size ?: 0
+                publish(statusText)
+            } catch (_: Exception) {
+                publish(uiText("Recupero di una take non riuscito", "Could not recover a take"))
+            }
+        }
+    }
+
+    private fun beginCountdown(id: String) {
+        countdownRemaining = countdownSeconds
+        fun tick() {
+            if (pendingTakeId != id) return
+            if (!bridge.connected || !tracking || !activityResumed) {
+                if (bridge.connected) bridge.send(JSONObject().put("type", "record_cancel").put("id", id))
+                pendingTakeId = null
+                countdownRemaining = 0
+                publish(uiText("Avvio ripresa annullato", "Recording start cancelled"))
+                return
+            }
+            if (countdownRemaining > 0) {
+                publish(uiText("Ripresa tra $countdownRemaining…", "Recording in $countdownRemaining…"))
+                countdownRemaining -= 1
+                countdownHandler.postDelayed({ tick() }, 1000)
+            } else {
+                val pose = latestPose.get()
+                if (pose == null) {
+                    bridge.send(JSONObject().put("type", "record_cancel").put("id", id))
+                    pendingTakeId = null
+                    publish(uiText("Tracciamento non disponibile", "Tracking unavailable"))
+                } else {
+                    bridge.send(pose.message("record_go").put("id", id))
+                    publish(uiText("Avvio timeline…", "Starting timeline…"))
+                }
+            }
+        }
+        tick()
+    }
+
+    private fun finishRecording(partial: Boolean = false) {
+        if (finalizing) return
+        finalizing = true
+        pendingTakeId = null
+        countdownRemaining = 0
+        ioExecutor.execute {
+            try {
+                val take = recorder.stop(partial) ?: return@execute
+                val file = File(filesDir, "pending_${take.getString("id")}.json")
+                if (partial) recoverableTakes += 1
+                if (bridge.connected && !partial) bridge.sendTake(file)
+                publish(if (partial) uiText("Take parziale da recuperare", "Partial take ready to recover")
+                    else if (bridge.connected) uiText("Invio take a Blender…", "Sending take to Blender…")
+                    else uiText("Take conservata sul telefono", "Take kept on phone"))
+            } catch (_: Exception) {
+                publish(uiText("Salvataggio take non riuscito; diario conservato", "Could not finalize take; journal kept"))
+            } finally {
+                finalizing = false
+            }
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -128,6 +303,7 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                         result.success(mapOf(
                             "host" to saved.getString("connection_host", ""),
                             "port" to saved.getInt("connection_port", 45767),
+                            "countdown" to countdownSeconds,
                         ))
                     }
                     "scanQr" -> {
@@ -173,6 +349,38 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                     "setScale" -> {
                         movementScale = (call.argument<Double>("value") ?: 1.0).coerceIn(0.1, 10.0)
                         sendScale()
+                        result.success(null)
+                    }
+                    "setCountdown" -> {
+                        val value = call.argument<Int>("seconds") ?: 0
+                        if (value !in setOf(0, 3, 5)) error(uiText("Conto alla rovescia non valido", "Invalid countdown"))
+                        countdownSeconds = value
+                        getSharedPreferences("action2blender", MODE_PRIVATE).edit()
+                            .putInt("countdown_seconds", value).apply()
+                        result.success(null)
+                    }
+                    "setOptics" -> {
+                        val focal = call.argument<Double>("lens") ?: lensMm
+                        val focus = call.argument<Double>("focus_distance") ?: focusDistance
+                        val aperture = call.argument<Double>("fstop") ?: fstop
+                        if (!recorder.isRecording()) error(uiText("Avvia Rec prima di regolare l'obiettivo", "Start Rec before adjusting the lens"))
+                        recorder.setOptics(focal, focus, aperture)
+                        lensMm = focal
+                        focusDistance = focus
+                        fstop = aperture
+                        bridge.send(JSONObject().put("type", "optics").put("lens", focal)
+                            .put("focus_distance", focus).put("fstop", aperture))
+                        latestPose.get()?.let { recorder.addSample(System.nanoTime(), it) }
+                        publish(statusText)
+                        result.success(null)
+                    }
+                    "sendRecoveredTakes" -> {
+                        if (!bridge.connected) error(uiText("Connetti Blender prima di inviare", "Connect to Blender before sending"))
+                        filesDir.listFiles { file -> file.name.startsWith("pending_") && file.name.endsWith(".json") }
+                            ?.forEach { file ->
+                                val take = JSONObject(file.readText())
+                                if (take.optBoolean("partial")) bridge.sendTake(file)
+                            }
                         result.success(null)
                     }
                     "setStabilization" -> {
@@ -237,36 +445,49 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                         val tracked = latestPose.get() ?: error(uiText("Tracciamento non disponibile", "Tracking unavailable"))
                         if (!bridge.connected || !tracking) error(uiText("Connetti Blender e attendi ARCore", "Connect to Blender and wait for ARCore"))
                         if (!centered) error(uiText("Premi Azzera prima di registrare", "Press Recenter before recording"))
+                        if (recorder.isRecording() || pendingTakeId != null || finalizing) error(uiText("Ripresa già in corso", "Recording already in progress"))
                         synchronized(commandLock) {
                             navigation.stop()
                             val now = System.nanoTime()
                             val pose = navigation.reset(now, tracked)
                             latestPose.set(pose)
-                            recorder.start(now, pose)
-                            bridge.send(pose.message("record_start").put("scale", movementScale))
+                            val id = UUID.randomUUID().toString()
+                            pendingTakeId = id
+                            bridge.send(pose.message("record_prepare").put("id", id).put("scale", movementScale))
                         }
-                        publish(uiText("Registrazione in corso", "Recording in progress"))
+                        publish(uiText("Preparazione ripresa…", "Preparing recording…"))
                         result.success(null)
                     }
                     "stopRecording" -> {
-                        val take = recorder.stop() ?: error(uiText("Nessuna ripresa attiva", "No active recording"))
-                        val id = take.getString("id")
-                        File(filesDir, "pending_$id.json").writeText(take.toString())
-                        if (bridge.connected) bridge.send(take)
-                        publish(if (bridge.connected) uiText("Invio take a Blender…", "Sending take to Blender…") else uiText("Take salvata sul telefono; riconnettiti", "Take saved on phone; reconnect"))
+                        val id = pendingTakeId ?: error(uiText("Nessuna ripresa attiva", "No active recording"))
+                        if (!recorder.isRecording()) {
+                            if (bridge.connected) bridge.send(JSONObject().put("type", "record_cancel").put("id", id))
+                            pendingTakeId = null
+                            countdownRemaining = 0
+                            publish(uiText("Avvio ripresa annullato", "Recording start cancelled"))
+                        } else if (bridge.connected) {
+                            bridge.send(JSONObject().put("type", "record_stop").put("id", id))
+                            publish(uiText("Arresto timeline…", "Stopping timeline…"))
+                        } else {
+                            finishRecording(partial = true)
+                        }
                         result.success(id)
                     }
                     "resumeRecording" -> {
+                        if (!bridge.connected || !centered) error(uiText("Ricollega Blender prima di riprendere", "Reconnect Blender before resuming"))
+                        val id = pendingTakeId ?: error(uiText("Nessuna ripresa attiva", "No active recording"))
+                        if (!recorder.isPaused() || resumePending) error(uiText("La take non è in pausa", "The take is not paused"))
                         val tracked = latestPose.get() ?: error(uiText("Tracciamento non disponibile", "Tracking unavailable"))
                         synchronized(commandLock) {
                             navigation.stop()
                             val now = System.nanoTime()
                             val pose = navigation.reset(now, tracked)
                             latestPose.set(pose)
-                            if (!tracking || !recorder.resume(now, pose)) error(uiText("La take non è in pausa", "The take is not paused"))
-                            if (bridge.connected) bridge.send(pose.message("resume"))
+                            if (!tracking) error(uiText("Tracciamento non disponibile", "Tracking unavailable"))
+                            resumePending = true
+                            bridge.send(pose.message("resume").put("id", id))
                         }
-                        publish(uiText("Registrazione ripresa senza salto", "Recording resumed without a jump"))
+                        publish(uiText("Riavvio timeline…", "Resuming timeline…"))
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -291,6 +512,14 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                 "recording" to recorder.isRecording(),
                 "paused" to recorder.isPaused(),
                 "stabilization" to stabilizationStrength.toDouble(),
+                "countdown" to countdownRemaining,
+                "countdownSetting" to countdownSeconds,
+                "preparing" to (pendingTakeId != null && !recorder.isRecording()),
+                "frame" to currentFrame,
+                "lens" to lensMm,
+                "focusDistance" to focusDistance,
+                "fstop" to fstop,
+                "recoverableTakes" to recoverableTakes,
             ))
         }
     }
@@ -303,7 +532,10 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
         filesDir.listFiles { file -> file.name.startsWith("pending_") && file.name.endsWith(".json") }
             ?.sortedBy { it.name }
             ?.forEach { file ->
-                try { bridge.send(JSONObject(file.readText())) }
+                try {
+                    val take = JSONObject(file.readText())
+                    if (!take.optBoolean("partial")) bridge.sendTake(file)
+                }
                 catch (_: Exception) { publish(uiText("Una take salvata non può essere letta", "A saved take could not be read")) }
             }
     }
@@ -374,6 +606,8 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
 
     override fun onDestroy() {
         bridge.close()
+        ioExecutor.execute { recorder.close() }
+        ioExecutor.shutdown()
         synchronized(sessionLock) { session?.close(); session = null }
         super.onDestroy()
     }

@@ -186,6 +186,40 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('recording in landscape shows frame and lens without overflow', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(832, 384);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const channel = MethodChannel('org.action2blender/events');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async => null);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    await tester.pumpWidget(const Action2BlenderApp());
+    await messenger.handlePlatformMessage(
+      'org.action2blender/events',
+      const StandardMethodCodec().encodeSuccessEnvelope({
+        'status': 'Registrazione',
+        'connected': true,
+        'tracking': true,
+        'centered': true,
+        'recording': true,
+        'frame': 42,
+        'lens': 85.0,
+        'fstop': 4.0,
+      }),
+      (_) {},
+    );
+    await tester.pump();
+    expect(find.text('42 · 85 mm · f/4.0'), findsOneWidget);
+    expect(find.text('Stop'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('connected portrait tablet fits navigation beside the preview', (
     tester,
   ) async {

@@ -1,6 +1,6 @@
 # Action2Blender — progetto tecnico delle prossime riprese
 
-Stato: **proposta da rivedere, non implementata**. Base analizzata: app e add-on 0.2.0, protocollo `camera_control: 3`.
+Stato: progetto tecnico della 0.3.0-dev.1, implementato localmente nei suoi flussi principali. Per il codice effettivo, le verifiche e le prove ancora necessarie sul dispositivo, vedere [RECORDING_V2_IMPLEMENTATION.md](RECORDING_V2_IMPLEMENTATION.md). La base analizzata qui era app e add-on 0.2.0, protocollo `camera_control: 3`.
 
 ## Obiettivo e confini
 

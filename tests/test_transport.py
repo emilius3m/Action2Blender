@@ -1,4 +1,6 @@
 import json
+import base64
+import hashlib
 import select
 import socket
 import sys
@@ -20,6 +22,40 @@ def read_line(file):
 
 
 class TransportTests(unittest.TestCase):
+    def test_chunked_take_resumes_and_ping_works_while_blender_saves(self):
+        take = {"type": "take", "id": "chunked-take", "events": [
+            {"t": 0, "p": [0, 0, 0], "q": [0, 0, 0, 1], "pad": "x" * 50000}
+        ]}
+        data = json.dumps(take).encode()
+        digest = hashlib.sha256(data).hexdigest()
+        client, file = self.connect()
+        with client, file:
+            send_line(file, {"type": "hello", "version": 1, "token": "test-token", "camera_control": 4})
+            self.assertEqual(read_line(file)["type"], "hello_ok")
+            send_line(file, {"type": "take_begin", "id": "chunked-take", "size": len(data), "sha256": digest})
+            self.assertEqual(read_line(file)["index"], 0)
+            send_line(file, {"type": "take_chunk", "id": "chunked-take", "index": 0,
+                             "data": base64.b64encode(data[:48 * 1024]).decode()})
+            self.assertEqual(read_line(file)["index"], 1)
+        client, file = self.connect()
+        with client, file:
+            send_line(file, {"type": "hello", "version": 1, "token": "test-token", "camera_control": 4})
+            self.assertEqual(read_line(file)["type"], "hello_ok")
+            send_line(file, {"type": "take_begin", "id": "chunked-take", "size": len(data), "sha256": digest})
+            self.assertEqual(read_line(file)["index"], 1)
+            send_line(file, {"type": "take_chunk", "id": "chunked-take", "index": 1,
+                             "data": base64.b64encode(data[48 * 1024:]).decode()})
+            self.assertEqual(read_line(file)["index"], 2)
+            send_line(file, {"type": "take_end", "id": "chunked-take"})
+            queued = self.server.events.get(timeout=2)
+            if queued["type"] == "connection_lost":
+                queued = self.server.events.get(timeout=2)
+            self.assertEqual(queued["id"], "chunked-take")
+            send_line(file, {"type": "ping", "id": 42})
+            self.assertEqual(read_line(file)["type"], "pong")
+            queued["_response"].put({"type": "take_saved", "id": "chunked-take"})
+            self.assertEqual(read_line(file)["type"], "take_saved")
+
     def test_take_requires_nonempty_id(self):
         with self.assertRaisesRegex(ValueError, "Invalid take ID"):
             validate_message({"type": "take", "id": "", "events": [{}]})
@@ -55,12 +91,12 @@ class TransportTests(unittest.TestCase):
     def test_receives_pose_and_confirms_saved_take(self):
         client, file = self.connect()
         with client, file:
-            send_line(file, {"type": "hello", "version": 1, "token": "test-token", "camera_control": 3})
+            send_line(file, {"type": "hello", "version": 1, "token": "test-token", "camera_control": 4})
             greeting = read_line(file)
             self.assertEqual(greeting["type"], "hello_ok")
             self.assertEqual(greeting["viewport_port"], 0)
             self.assertTrue(greeting["recenter_ack"])
-            self.assertEqual(greeting["camera_control"], 3)
+            self.assertEqual(greeting["camera_control"], 4)
             send_line(file, {"type": "pose", "p": [1, 2, 3], "q": [0, 0, 0, 1]})
             self.assertEqual(read_line(file)["type"], "ack")
             self.assertEqual(self.server.events.get(timeout=2)["type"], "pose")
@@ -76,7 +112,7 @@ class TransportTests(unittest.TestCase):
     def test_recenter_waits_for_blender_and_reports_its_result(self):
         client, file = self.connect()
         with client, file:
-            send_line(file, {"type": "hello", "version": 1, "token": "test-token", "camera_control": 3})
+            send_line(file, {"type": "hello", "version": 1, "token": "test-token", "camera_control": 4})
             self.assertEqual(read_line(file)["type"], "hello_ok")
             send_line(file, {"type": "recenter", "p": [0, 0, 0], "q": [0, 0, 0, 1]})
             event = self.server.events.get(timeout=2)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 
-from action2blender.core import Pose, PoseMapper, _mul, _rotate, map_navigation, sample_take, stabilize_take
+from action2blender.core import Pose, PoseMapper, _mul, _rotate, map_navigation, sample_optics, sample_take, stabilize_take
 from action2blender.transport import validate_message
 
 
@@ -94,6 +94,21 @@ class PoseMappingTests(unittest.TestCase):
             {"t": 1, "p": [0, 0, 0], "q": IDENTITY, "v": [0, 0, -2]},
         ], mapper, 2)
         self.assertVectorAlmostEqual([pose.position[1] for _, pose in frames], [0, 1, 2])
+
+    def test_blender_frame_markers_determine_pose_and_optics_keys(self):
+        events = [
+            {"t": 0, "p": [0, 0, 0], "q": IDENTITY,
+             "lens": 50, "focus_distance": 2, "fstop": 2.8},
+            {"t": 1, "p": [0, 1, 0], "q": IDENTITY,
+             "lens": 100, "focus_distance": 4, "fstop": 5.6},
+        ]
+        markers = [(0, 0.0), (5, 0.25), (12, 1.0)]
+        poses = sample_take(events, PoseMapper(LEVEL_PHONE, Pose((0, 0, 0), LEVEL_CAMERA), 1),
+                            24, markers)
+        optics = sample_optics(events, 24, (50, 2, 2.8), markers)
+        self.assertEqual([frame for frame, _ in poses], [0, 5, 12])
+        self.assertAlmostEqual(poses[1][1].position[2], 0.25)
+        self.assertEqual(optics[1][1], (62.5, 2.5, 3.5))
 
     def test_tracking_rebase_preserves_virtual_camera_position(self):
         mapper = PoseMapper(LEVEL_PHONE, Pose((0, 0, 0), TILTED_CAMERA), 1)
