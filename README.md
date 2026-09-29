@@ -26,7 +26,7 @@ The app follows the phone language (Italian on Italian phones, English otherwise
 
 1. Open your scene in Blender. To use an existing camera, pick it in the **Camera** field of the Action2Blender panel. The camera must not have a parent object or active constraints. You can also create a new camera from the app once connected.
 2. **16:9 framing** is on by default and sets the scene resolution to 16:9 when the connection starts; turn it off to keep the scene's format. Press **Start phone connection**: the panel shows a QR code, the PC's IP address, the port and a temporary pairing code.
-3. In the app, press **Scan Blender QR code**; the scanner is built into the app. Alternatively, enter the IP, port and code and press **Connect**. If the PC has several network connections, check that the IP shown in the panel is the one the phone can reach.
+3. In the app, press **Scan Blender QR code**; the scanner is built into the app. Alternatively, enter the IP, port and code and press **Connect**. The app remembers the last PC IP and port after a restart; enter the current pairing code again. If the PC has several network connections, check that the IP shown in the panel is the one the phone can reach.
 4. Wait for **Tracking active**. To start from the chosen camera, press **Recenter**: its current framing becomes the starting point. Or, in the **New camera** card, choose **From Blender 3D View** or **Frame selected object**. Wait for **Camera ready** before recording.
 
 ## Move and record the camera
