@@ -31,7 +31,7 @@ Aggiornato il 29 settembre 2026. Questo documento descrive **il codice locale**,
 | Verifiche | `test/`, `tests/`, `android/app/src/test/` | Flutter, Python, Kotlin e Blender senza GUI |
 | Pacchetti | `scripts/package_addon.py`, `scripts/build_release.ps1` | ZIP e APK firmato |
 
-`README.md` guida l'installazione e l'uso della coppia locale app +11 / add-on 0.2.3; `PROJECT_BRIEF.md` conserva le decisioni iniziali ed è **storico**. `CAMERA_DESIGN.md` contiene anche funzioni ancora da realizzare. Per lo stato effettivo prevalgono questo documento e il codice.
+`README.md` (inglese) e `README.it.md` (italiano) guidano l'installazione e l'uso della release 0.2.0 beta 1: vanno aggiornati insieme; `PROJECT_BRIEF.md` conserva le decisioni iniziali ed è **storico**. `CAMERA_DESIGN.md` contiene anche funzioni ancora da realizzare. Per lo stato effettivo prevalgono questo documento e il codice.
 
 ## Funzioni presenti nel codice locale
 

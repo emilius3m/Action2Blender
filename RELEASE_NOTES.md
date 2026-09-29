@@ -17,10 +17,10 @@ Il telefono diventa una camera virtuale completa: anteprima della scena sullo sc
 - **Action2Blender-addon-0.2.0.zip**: in Blender apri **Edit → Preferences → Add-ons → Install from Disk**, scegli lo ZIP e abilita **Action2Blender**. Se aggiorni da una versione precedente, salva la scena e riavvia Blender.
 - **Action2Blender-0.2.0-beta.1.apk**: installalo su un telefono Android compatibile con ARCore. Telefono e PC devono essere sulla stessa rete.
 
-**Aggiorna insieme app e add-on**: la 0.2 non si collega alla 0.1 e ciascuno dei due chiede di aggiornare l'altro. L'APK ha la stessa firma della 0.1.1 e si installa sopra senza disinstallarla. Istruzioni complete nel [README](https://github.com/emilius3m/Action2Blender#readme).
+**Aggiorna insieme app e add-on**: la 0.2 non si collega alla 0.1 e ciascuno dei due chiede di aggiornare l'altro. L'APK ha la stessa firma della 0.1.1 e si installa sopra senza disinstallarla. Istruzioni complete nel [README in italiano](https://github.com/emilius3m/Action2Blender/blob/main/README.it.md) ([English](https://github.com/emilius3m/Action2Blender#readme)).
 
 ## Verifiche e limiti
 
 Verificato con test Flutter, Kotlin e Python e con prove automatiche in Blender 5.2.1 (collegamento, anteprima, creazione della camera, movimento con camera inclinata, take e stabilizzazione). La build di sviluppo precedente è stata installata sul Samsung Galaxy S25 Ultra, ma la prova completa di queste funzioni sul telefono non è ancora conclusa, e altri dispositivi non sono stati provati.
 
-Limiti noti: aprire un altro file `.blend` con la connessione attiva richiede di riavviare la connessione dal pannello; una take in attesa non può essere salvata se nel frattempo Blender viene riavviato; il telefono non si ricollega da solo dopo un'interruzione della rete; take oltre circa 15 minuti possono superare il limite di dimensione. L'elenco completo è nel README.
+Limiti noti: aprire un altro file `.blend` con la connessione attiva richiede di riavviare la connessione dal pannello; una take in attesa non può essere salvata se nel frattempo Blender viene riavviato; il telefono non si ricollega da solo dopo un'interruzione della rete; take oltre circa 15 minuti possono superare il limite di dimensione. L'elenco completo è nel [README](https://github.com/emilius3m/Action2Blender/blob/main/README.it.md).

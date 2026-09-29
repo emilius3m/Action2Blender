@@ -1,72 +1,74 @@
 # Action2Blender
 
-Usa un telefono Android come camera virtuale per Blender: muovi l'inquadratura a mano libera o con i comandi sullo schermo, guarda l'anteprima sul telefono e registra ogni ripresa come take separata.
+**English** · [Italiano](README.it.md)
 
-> **Versione attuale: 0.2.0 beta 1.** Scarica l'APK e lo ZIP dell'add-on dalla [pagina Releases](https://github.com/emilius3m/Action2Blender/releases). Usa sempre app e add-on della **stessa release**: la 0.2 non si collega all'add-on 0.1 e viceversa.
+Use an Android phone as a virtual camera for Blender: move the shot by hand or with on-screen controls, watch the preview on the phone, and record every shot as a separate take.
 
-## Occorrente
+> **Current version: 0.2.0 beta 1.** Download the APK and the add-on ZIP from the [Releases page](https://github.com/emilius3m/Action2Blender/releases). Always use the app and add-on from the **same release**: 0.2 does not connect to the 0.1 add-on, and vice versa.
 
-- Blender 5.2 (provato con 5.2.1) su un PC.
-- Un telefono Android compatibile con ARCore ([elenco dei dispositivi](https://developers.google.com/ar/devices)). Finora è stato provato un Samsung Galaxy S25 Ultra.
-- PC e telefono sulla stessa rete locale, con la connessione consentita dal firewall del PC sulla rete privata.
+## Requirements
 
-## Installazione
+- Blender 5.2 (tested with 5.2.1) on a PC.
+- An ARCore-compatible Android phone ([supported devices](https://developers.google.com/ar/devices)). So far it has been tested on a Samsung Galaxy S25 Ultra.
+- PC and phone on the same local network, with the connection allowed by the PC firewall on the private network.
 
-1. Scarica dalla pagina Releases `Action2Blender-addon-0.2.0.zip` e `Action2Blender-0.2.0-beta.1.apk`.
-2. In Blender apri **Edit → Preferences → Add-ons**, dal menu **⌄** in alto a destra scegli **Install from Disk**, seleziona lo ZIP e abilita **Action2Blender**. Il pannello si trova in **Vista 3D → barra laterale (N) → Action2Blender**. Se stai aggiornando da una versione precedente, salva la scena e riavvia Blender.
-3. Installa l'APK sul telefono, apri **Action2Blender** e concedi l'accesso alla fotocamera. Android potrebbe chiedere di installare o aggiornare i servizi Google Play per AR.
+## Installation
 
-Se Android rifiuta l'aggiornamento perché l'app installata ha una firma diversa, **non disinstallarla finché ci sono take non ancora confermate da Blender**: sono conservate solo nell'area privata dell'app.
+1. From the Releases page, download `Action2Blender-addon-0.2.0.zip` and `Action2Blender-0.2.0-beta.1.apk`.
+2. In Blender, open **Edit → Preferences → Add-ons**, choose **Install from Disk** from the **⌄** menu at the top right, select the ZIP and enable **Action2Blender**. The panel is in **3D Viewport → Sidebar (N) → Action2Blender**. If you are upgrading from an earlier version, save your scene and restart Blender.
+3. Install the APK on the phone, open **Action2Blender** and allow camera access. Android may ask you to install or update Google Play Services for AR.
 
-L'app è in italiano sui telefoni in italiano e in inglese negli altri casi; il pannello di Blender è in inglese. Questa guida usa le etichette italiane dell'app.
+If Android refuses the update because the installed app has a different signature, **do not uninstall it while there are takes Blender has not confirmed yet**: they are stored only in the app's private storage.
 
-## Collega il telefono
+The app follows the phone language (Italian on Italian phones, English otherwise); the Blender panel is in English. This guide uses the English app labels.
 
-1. Apri la scena in Blender. Per usare una camera esistente, sceglila nel campo **Camera** del pannello Action2Blender. La camera non deve avere un oggetto padre né vincoli attivi. Puoi anche crearne una nuova dall'app dopo il collegamento.
-2. L'opzione **16:9 framing** è attiva per impostazione predefinita e porta la risoluzione della scena a 16:9 all'avvio della connessione; disattivala se vuoi mantenere il formato della scena. Premi **Start phone connection**: il pannello mostra un QR, l'IP del PC, la porta e un codice di abbinamento temporaneo.
-3. Nell'app premi **Scansiona QR di Blender**; il lettore è incluso nell'app. In alternativa inserisci IP, porta e codice e premi **Connetti**. Se il PC ha più connessioni di rete, controlla che l'IP nel pannello sia quello raggiungibile dal telefono.
-4. Attendi **Tracciamento attivo**. Per partire dalla camera scelta premi **Azzera**: la sua inquadratura attuale diventa il punto di partenza. Oppure, nella scheda **Nuova camera**, scegli **Dalla vista 3D di Blender** o **Inquadra oggetto selezionato**. Aspetta **Camera pronta** prima di registrare.
+## Connect the phone
 
-## Muovi e registra la camera
+1. Open your scene in Blender. To use an existing camera, pick it in the **Camera** field of the Action2Blender panel. The camera must not have a parent object or active constraints. You can also create a new camera from the app once connected.
+2. **16:9 framing** is on by default and sets the scene resolution to 16:9 when the connection starts; turn it off to keep the scene's format. Press **Start phone connection**: the panel shows a QR code, the PC's IP address, the port and a temporary pairing code.
+3. In the app, press **Scan Blender QR code**; the scanner is built into the app. Alternatively, enter the IP, port and code and press **Connect**. If the PC has several network connections, check that the IP shown in the panel is the one the phone can reach.
+4. Wait for **Tracking active**. To start from the chosen camera, press **Recenter**: its current framing becomes the starting point. Or, in the **New camera** card, choose **From Blender 3D View** or **Frame selected object**. Wait for **Camera ready** before recording.
 
-- **Movimento fisico.** Muovi e ruota il telefono: la camera segue. La verticale del telefono coincide con quella di Blender, quindi una panoramica mantiene l'orizzonte dritto e camminare sposta la camera in orizzontale anche se è inclinata. **Scala** moltiplica solo gli spostamenti (1× = un metro reale per un'unità di Blender), non le rotazioni.
-- **Comandi sullo schermo.** Dopo **Camera pronta** compaiono **Sposta** (avanti, indietro e di lato, sempre in orizzontale), **Ruota** (panoramica e inclinazione) e i pulsanti per salire e scendere. Si sommano al movimento fisico, funzionano anche con il telefono fermo su un supporto e vengono registrati nella take.
-- **Anteprima.** Il telefono mostra la vista della camera generata da Blender. In orizzontale occupa lo schermo, con i comandi sopra il video; su tablet i comandi stanno a lato.
-- **Registrazione.** Premi **Rec** per iniziare e **Stop** per terminare. Durante il tracciamento lo schermo resta acceso. La take compare in **Recorded takes** nel pannello di Blender come Action separata, partendo dal fotogramma corrente: le take precedenti non vengono sovrascritte. Selezionane una nel pannello e salva il file `.blend`.
-- **Perdita del tracciamento.** Se ARCore perde il tracciamento o l'app va in pausa, la take si sospende. Quando il tracciamento torna, premi **Riprendi senza salto**.
-- **Rete.** Dopo **Stop** la take resta sul telefono finché Blender non ne conferma il salvataggio. Se il Wi-Fi si interrompe, premi di nuovo **Connetti** (o scansiona il QR): la take viene ritrasmessa. Potrebbe servire premere di nuovo **Azzera**.
+## Move and record the camera
 
-### Stabilizzazione
+- **Physical movement.** Move and turn the phone and the camera follows. The phone's vertical matches Blender's, so panning keeps the horizon level and walking moves the camera horizontally even when it is tilted. **Scale** multiplies translation only (1× = one real metre per Blender unit), not rotation.
+- **On-screen controls.** After **Camera ready**, **Move** (forward, back and sideways, always horizontal), **Rotate** (pan and tilt) and the up/down buttons appear. They add to the physical movement, work with the phone fixed on a mount, and are recorded in the take.
+- **Preview.** The phone shows the camera view rendered by Blender. In landscape it fills the screen with the controls over the video; on tablets the controls sit alongside.
+- **Recording.** Press **Rec** to start and **Stop** to finish. The screen stays on while tracking. The take appears under **Recorded takes** in the Blender panel as a separate Action, starting at the current frame; earlier takes are never overwritten. Select one in the panel and save the `.blend` file.
+- **Tracking loss.** If ARCore loses tracking or the app is paused, the take is suspended. When tracking returns, press **Resume without jump**.
+- **Network.** After **Stop** the take stays on the phone until Blender confirms it has been saved. If Wi-Fi drops, press **Connect** again (or scan the QR code) and the take is sent again. You may need to press **Recenter** again.
 
-Ci sono due filtri separati; se li attivi entrambi, la take viene levigata due volte.
+### Stabilization
 
-- **Stabilizzazione live** (nell'app, 25% all'inizio): filtra la posa del telefono prima dell'anteprima e della registrazione. Valori alti rendono la risposta ai movimenti voluti un po' più lenta. Si regola solo fuori da Rec; 0% la disattiva.
-- **Stabilize after Stop** (in Blender, attivo con **Strength** 0,5): dopo Stop crea una seconda Action stabilizzata accanto all'originale, che non viene mai modificata. **Stabilize selected take** crea una nuova versione stabilizzata di una take già registrata.
+There are two separate filters; if both are on, the take is smoothed twice.
 
-## Se qualcosa non funziona
+- **Live stabilization** (in the app, 25% by default): filters the phone pose before the preview and the recording. High values make intentional moves respond a little more slowly. It can only be changed outside Rec; 0% turns it off.
+- **Stabilize after Stop** (in Blender, on with **Strength** 0.5): after Stop, creates a second, stabilized Action next to the original, which is never modified. **Stabilize selected take** creates a new stabilized version of a take already recorded.
 
-| Problema | Controllo rapido |
+## Troubleshooting
+
+| Problem | Quick check |
 | --- | --- |
-| Il telefono non si collega | PC e telefono sulla stessa rete, IP corretto nel pannello, connessione consentita dal firewall sulla rete privata. |
-| "Aggiorna l'app Action2Blender sul telefono" o "Aggiorna o ricarica l'add-on Action2Blender" | App e add-on provengono da release diverse: installa entrambi dalla stessa release e riavvia Blender. |
-| La camera non si muove o Rec è disabilitato | Attendi il tracciamento e **Camera pronta**. Con una camera esistente, sceglila nel pannello e premi **Azzera**. Niente oggetto padre né vincoli attivi sulla camera. |
-| La take selezionata non si vede in riproduzione | Se nella Timeline ci sono marker collegati a camere, sono loro a scegliere la camera attiva durante la riproduzione. |
-| L'anteprima non arriva | Tieni aperta una Vista 3D in Blender e controlla il firewall: l'anteprima usa una seconda porta locale oltre alla porta di collegamento. |
-| I comandi non rispondono dopo aver aperto un altro file | Premi **Stop phone connection** e poi **Start phone connection**, quindi ricollega il telefono. |
-| Dopo Stop la take non compare | Controlla il messaggio nell'app e aspetta la conferma di Blender. Non disinstallare l'app finché una take è in attesa. |
+| The phone does not connect | PC and phone on the same network, correct IP in the panel, connection allowed by the firewall on the private network. |
+| "Update the Action2Blender app on your phone" or "Update or reload the Action2Blender add-on" | The app and add-on come from different releases: install both from the same release and restart Blender. |
+| The camera does not move or Rec is disabled | Wait for tracking and **Camera ready**. With an existing camera, pick it in the panel and press **Recenter**. The camera must have no parent object and no active constraints. |
+| The selected take does not play back | Timeline markers bound to cameras choose the active camera during playback. |
+| No preview | Keep a 3D Viewport open in Blender and check the firewall: the preview uses a second local port besides the connection port. |
+| Controls stop responding after opening another file | Press **Stop phone connection**, then **Start phone connection**, and reconnect the phone. |
+| The take does not appear after Stop | Check the message in the app and wait for Blender's confirmation. Do not uninstall the app while a take is pending. |
 
-## Limiti noti di questa beta
+## Known limitations of this beta
 
-- Anteprima, joystick, creazione della camera dall'app e nuova mappatura della verticale sono stati verificati con prove automatiche e in Blender; la prova completa sul telefono è ancora in corso. Altri telefoni Android non sono ancora stati provati.
-- Aprire un altro file `.blend` con la connessione attiva ferma l'elaborazione dei comandi finché non riavvii la connessione dal pannello.
-- Una take in attesa sul telefono non può più essere salvata se nel frattempo Blender viene riavviato o la connessione viene riavviata dal pannello.
-- Il telefono non si ricollega da solo dopo un'interruzione della rete.
-- Take molto lunghe (oltre circa 15 minuti) possono superare il limite di dimensione del messaggio.
-- Dopo aver ruotato la camera con il joystick, gli spostamenti fisici seguono ancora la direzione del momento di **Azzera**.
-- Le take animano posizione e rotazione, non la focale. Parent e vincoli della camera non sono supportati.
+- The preview, joysticks, creating a camera from the app and the new vertical alignment have been verified with automated tests and in Blender; the full test on the phone is still in progress. Other Android phones have not been tested yet.
+- Opening another `.blend` file while connected stops command processing until you restart the connection from the panel.
+- A take pending on the phone can no longer be saved if Blender is restarted, or the connection is restarted from the panel, in the meantime.
+- The phone does not reconnect by itself after a network drop.
+- Very long takes (over about 15 minutes) can exceed the message size limit.
+- After turning the camera with the joystick, physical movement still follows the direction it had at **Recenter**.
+- Takes animate position and rotation, not focal length. Camera parents and constraints are not supported.
 
-## Sviluppo
+## Development
 
-Il codice è diviso in tre parti: interfaccia Flutter (`lib/`), tracciamento ARCore e collegamento in Kotlin (`android/app/src/main/kotlin/`), add-on Blender in Python (`addon/action2blender/`). Per le verifiche, la compilazione e lo stato dello sviluppo vedi [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md); le scelte di progetto della camera sono in [CAMERA_DESIGN.md](CAMERA_DESIGN.md).
+The code has three parts: the Flutter interface (`lib/`), ARCore tracking and networking in Kotlin (`android/app/src/main/kotlin/`), and the Blender add-on in Python (`addon/action2blender/`). For tests, builds and development status see [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md); the camera design is in [CAMERA_DESIGN.md](CAMERA_DESIGN.md). Both are in Italian.
 
-Il codice originale è distribuito con [licenza MIT](LICENSE). ARCore e le altre dipendenze mantengono le rispettive licenze; vedi [THIRD_PARTY.md](THIRD_PARTY.md).
+The original code is released under the [MIT license](LICENSE). ARCore and the other dependencies keep their own licenses; see [THIRD_PARTY.md](THIRD_PARTY.md).
