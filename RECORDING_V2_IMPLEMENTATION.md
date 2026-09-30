@@ -17,6 +17,15 @@ Aggiornato il 29 settembre 2026. Questa versione non è pubblicata. La release s
 - La posa dal vivo rispetta il modo di rotazione della camera (Euler, quaternione, asse-angolo): le chiavi dell'utente continuano a funzionare. Un'Action sostituita da una take riceve il fake user e non sparisce al salvataggio.
 - Rete: prima dell'abbinamento Blender accetta righe di al massimo 4 KB, dopo al massimo 256 KB; un client abbinato silenzioso per 30 s viene chiuso. Sul telefono le pose dal vivo in coda sono al massimo una: le più recenti sostituiscono quella in attesa (`tests/test_transport.py`).
 
+## Correzioni del 30 settembre
+
+- **Correzione del tracking durante Rec:** un `resume` senza ID (ARCore si riallinea) ora riallinea soltanto la camera, anche durante la ripresa o fra Stop e arrivo della take; solo il `resume` con l'ID della ripresa (pulsante Riprendi) riavvia la timeline. Prima Blender rispondeva "Recording ID does not match", la camera dal vivo perdeva lo spostamento dei joystick e l'anteprima non corrispondeva più alla take.
+- **Take non importabile:** se Blender non riesce a importare la take della ripresa in corso, chiude quella ripresa invece di restare in attesa; Rec e Nuova camera tornano disponibili. Il buffer del trasferimento viene liberato sia dopo il salvataggio sia dopo un rifiuto o un contenuto corrotto; con il buffer pieno si scarta il trasferimento incompleto più vecchio invece di rifiutare le nuove take.
+- **Sul telefono** un errore di trasferimento toglie solo quella take dalla coda della sessione e passa alle altre. Una take rifiutata da Blender in importazione diventa `rejected_<id>.json`: non viene più reinviata a ogni collegamento; la scheda **Take non importate** ne mostra il numero e **Riprova** la rimette in coda (per esempio dopo aver aggiornato l'add-on). Esportarla o eliminarla dall'app non è ancora possibile.
+- **Nuova camera dalla vista 3D:** la focale riproduce il campo visivo orizzontale della vista (la focale della Vista 3D si riferisce a un sensore di 72 mm). Verificato in Blender: vista a 50 mm = 71,5°, nuova camera 25 mm = 71,5°.
+- Minori: l'ID ricevuto con `take_saved` deve essere un UUID prima di diventare un nome di file; il controllo del messaggio del lettore QR funziona anche in inglese; le take hanno segno dei quaternioni continuo.
+- Test: `tests/blender_robustness_smoke.py`, casi nuovi in `tests/test_core.py` e `tests/test_transport.py`.
+
 ## Percorsi principali
 
 | Parte | File |

@@ -160,7 +160,11 @@ class _Handler(socketserver.StreamRequestHandler):
                                  "index": server.add_take_chunk(validated)})
                     continue
                 if validated["type"] == "take_end":
-                    validated = server.complete_take(validated["id"])
+                    try:
+                        validated = server.complete_take(validated["id"])
+                    except ValueError:
+                        server.clear_take(validated["id"])  # a corrupt transfer restarts from scratch
+                        raise
                 response_queue = None
                 if validated["type"] in {"take", "recenter", "create_camera",
                                          "record_prepare", "record_go", "record_stop", "resume"}:
@@ -199,8 +203,8 @@ class _Handler(socketserver.StreamRequestHandler):
             self._reply(response)
         except (OSError, ValueError):
             pass
-        if message["type"] == "take" and response.get("type") == "take_saved":
-            server.clear_take(message["id"])
+        if message["type"] == "take" and response.get("type") in {"take_saved", "error"}:
+            server.clear_take(message["id"])  # saved or rejected: either way the buffer is done
 
 
 class PoseServer(socketserver.ThreadingTCPServer):
@@ -244,7 +248,9 @@ class PoseServer(socketserver.ThreadingTCPServer):
             item = self._takes.get(message["id"])
             if item is None:
                 if len(self._takes) >= 4:
-                    raise ValueError("Too many pending take transfers")
+                    # Keep memory bounded without refusing new takes: drop the oldest unfinished
+                    # transfer. The phone keeps that take and sends it again later.
+                    self._takes.pop(next(iter(self._takes)))
                 item = {"size": message["size"], "sha256": message["sha256"],
                         "data": bytearray(), "next": 0}
                 self._takes[message["id"]] = item

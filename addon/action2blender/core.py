@@ -214,6 +214,10 @@ def sample_take(events: list[dict], mapper: PoseMapper, fps: float,
                 _add(left_pose.position, _scale(_sub(right_pose.position, left_pose.position), alpha)),
                 _slerp(left_pose.rotation, right_pose.rotation, alpha),
             )
+        if result and _dot(result[-1][1].rotation, pose.rotation) < 0:
+            # q and -q are the same rotation, but keys that flip sign make Blender
+            # interpolate the long way round between frames.
+            pose = Pose(pose.position, tuple(-value for value in pose.rotation))  # type: ignore[arg-type]
         result.append((frame, pose))
     return result
 

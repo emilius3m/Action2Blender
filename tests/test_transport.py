@@ -56,6 +56,27 @@ class TransportTests(unittest.TestCase):
             queued["_response"].put({"type": "take_saved", "id": "chunked-take"})
             self.assertEqual(read_line(file)["type"], "take_saved")
 
+    def test_failed_transfers_never_block_new_takes(self):
+        # More unfinished transfers than the buffer holds: the oldest is dropped, none refused.
+        for index in range(6):
+            self.assertEqual(self.server.begin_take(
+                {"id": f"take-{index}", "size": 10, "sha256": "0" * 64}), 0)
+        self.assertLessEqual(len(self.server._takes), 4)
+        # A transfer whose content is corrupt is cleared, so the phone can start it again.
+        client, file = self.connect()
+        with client, file:
+            send_line(file, {"type": "hello", "version": 1, "token": "test-token", "camera_control": 4})
+            self.assertEqual(read_line(file)["type"], "hello_ok")
+            data = b'{"type":"take"}'
+            send_line(file, {"type": "take_begin", "id": "bad", "size": len(data), "sha256": "f" * 64})
+            self.assertEqual(read_line(file)["index"], 0)
+            send_line(file, {"type": "take_chunk", "id": "bad", "index": 0,
+                             "data": base64.b64encode(data).decode()})
+            self.assertEqual(read_line(file)["index"], 1)
+            send_line(file, {"type": "take_end", "id": "bad"})
+            self.assertEqual(read_line(file)["message"], "Take checksum does not match")
+        self.assertNotIn("bad", self.server._takes)
+
     def test_rejects_large_message_before_pairing(self):
         client, file = self.connect()
         with client, file:

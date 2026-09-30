@@ -156,6 +156,14 @@ class PoseMappingTests(unittest.TestCase):
                     24,
                 )
 
+    def test_take_rotations_keep_a_continuous_sign(self):
+        rotation = (0, math.sin(0.1), 0, math.cos(0.1))
+        flipped = tuple(-value for value in rotation)
+        events = [{"t": index / 24, "p": [0, 0, 0], "q": rotation if index % 2 else flipped} for index in range(10)]
+        frames = sample_take(events, PoseMapper(LEVEL_PHONE, Pose((0, 0, 0), LEVEL_CAMERA), 1), 24)
+        for (_, previous), (_, current) in zip(frames, frames[1:]):
+            self.assertGreater(sum(a * b for a, b in zip(previous.rotation, current.rotation)), 0)
+
     def test_lens_change_between_tracking_samples_is_put_back_in_order(self):
         # Build 15 phones: a tracking sample stamped at its frame start (0.50 s) is appended
         # after a lens change stamped at the moment it happened (0.52 s).

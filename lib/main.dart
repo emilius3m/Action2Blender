@@ -67,6 +67,7 @@ class _CameraControlPageState extends State<CameraControlPage> {
   int _countdownRemaining = 0;
   int _frame = 0;
   int _recoverableTakes = 0;
+  int _rejectedTakes = 0;
   bool _preparing = false;
   double _lensMm = 50.0;
   double _focusDistance = 10.0;
@@ -83,7 +84,8 @@ class _CameraControlPageState extends State<CameraControlPage> {
       if (!mounted || event is! Map) return;
       setState(() {
         _status = event['status']?.toString() ?? _status;
-        if (_scanningQr && _status.startsWith('Inquadra il QR')) {
+        if (_scanningQr &&
+            _status.startsWith(uiText('Inquadra il QR', 'Scan the QR'))) {
           _qrFeedback = _status;
         }
         _tracking = event['tracking'] == true;
@@ -106,6 +108,9 @@ class _CameraControlPageState extends State<CameraControlPage> {
         _recoverableTakes = event['recoverableTakes'] is int
             ? event['recoverableTakes'] as int
             : _recoverableTakes;
+        _rejectedTakes = event['rejectedTakes'] is int
+            ? event['rejectedTakes'] as int
+            : _rejectedTakes;
         _lensMm = event['lens'] is num
             ? (event['lens'] as num).toDouble()
             : _lensMm;
@@ -468,6 +473,22 @@ class _CameraControlPageState extends State<CameraControlPage> {
     ),
   );
 
+  Widget _rejectedTakesCard() => _card(
+    uiText('Take non importate', 'Takes not imported'),
+    [
+      Text(
+        uiText(
+          '$_rejectedTakes riprese rifiutate da Blender sono conservate sul telefono. Aggiorna l’add-on e riprova.',
+          '$_rejectedTakes takes rejected by Blender are kept on this phone. Update the add-on and try again.',
+        ),
+      ),
+      OutlinedButton(
+        onPressed: _connected ? () => _call('retryRejectedTakes') : null,
+        child: Text(uiText('Riprova', 'Try again')),
+      ),
+    ],
+  );
+
   Widget _indicator(String title, bool active) => Chip(
     avatar: Icon(
       active ? Icons.check_circle : Icons.circle_outlined,
@@ -732,6 +753,7 @@ class _CameraControlPageState extends State<CameraControlPage> {
                     child: Text(uiText('Invia a Blender', 'Send to Blender')),
                   ),
                 ]),
+              if (_rejectedTakes > 0) _rejectedTakesCard(),
               Padding(
                 padding: const EdgeInsets.all(8),
                 child: Text(
@@ -986,6 +1008,7 @@ class _CameraControlPageState extends State<CameraControlPage> {
                                     [_countdownControls()],
                                   ),
                                   _opticsControls(),
+                                  if (_rejectedTakes > 0) _rejectedTakesCard(),
                                   if (_recoverableTakes > 0)
                                     _card(
                                       uiText(

@@ -30,6 +30,9 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /** Flutter UI + native ARCore pose capture. No video or scene data leaves the LAN. */
+/** Take IDs are UUIDs made by this app; anything else from the network is ignored. */
+private val TAKE_ID = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
 class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
     private val sessionLock = Any()
     private val commandLock = Any()
@@ -52,6 +55,7 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
     private var focusDistance = 10.0
     private var fstop = 2.8
     private var recoverableTakes = 0
+    @Volatile private var rejectedTakes = 0
     private var lastSessionId = ""
     private val navigation = NavigationController()
     private val poseStabilizer = PoseStabilizer()
@@ -82,6 +86,7 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
             file.name.startsWith("pending_") && file.name.endsWith(".json") &&
                 runCatching { JSONObject(file.readText()).optBoolean("partial") }.getOrDefault(false)
         }?.size ?: 0
+        rejectedTakes = countTakeFiles("rejected_")
         stabilizationStrength = getSharedPreferences("action2blender", MODE_PRIVATE)
             .getFloat("live_stabilization", 0.25f).coerceIn(0f, 1f)
         bridge = BridgeClient(
@@ -115,7 +120,8 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                 }
                 publish(text)
             },
-            onTakeAcknowledged = { id ->
+            onTakeAcknowledged = acknowledged@{ id ->
+                if (!id.matches(TAKE_ID)) return@acknowledged  // never build a file name from an unexpected value
                 val file = File(filesDir, "pending_$id.json")
                 if (file.exists() && runCatching { JSONObject(file.readText()).optBoolean("partial") }.getOrDefault(false)) {
                     recoverableTakes = (recoverableTakes - 1).coerceAtLeast(0)
@@ -203,6 +209,10 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                     recorder.addFrameMarker(bridge.phoneTimeForServer(response.optLong("server_time_ns")), currentFrame)
                     publish(statusText)
                 }
+            },
+            onTakeRejected = {
+                rejectedTakes = countTakeFiles("rejected_")
+                publish(uiText("Blender ha rifiutato una take: resta sul telefono", "Blender rejected a take: it stays on this phone"))
             },
         )
         glView = GLSurfaceView(this).apply {
@@ -374,6 +384,18 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                         publish(statusText)
                         result.success(null)
                     }
+                    "retryRejectedTakes" -> {
+                        if (!bridge.connected) error(uiText("Connetti Blender prima di inviare", "Connect to Blender before sending"))
+                        // After an add-on update Blender may accept them: put them back in the queue.
+                        filesDir.listFiles { file -> file.name.startsWith("rejected_") && file.name.endsWith(".json") }
+                            ?.forEach { file ->
+                                val pending = File(filesDir, "pending_" + file.name.removePrefix("rejected_"))
+                                if (file.renameTo(pending)) bridge.sendTake(pending)
+                            }
+                        rejectedTakes = countTakeFiles("rejected_")
+                        publish(uiText("Invio take a Blender…", "Sending take to Blender…"))
+                        result.success(null)
+                    }
                     "sendRecoveredTakes" -> {
                         if (!bridge.connected) error(uiText("Connetti Blender prima di inviare", "Connect to Blender before sending"))
                         filesDir.listFiles { file -> file.name.startsWith("pending_") && file.name.endsWith(".json") }
@@ -520,9 +542,13 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                 "focusDistance" to focusDistance,
                 "fstop" to fstop,
                 "recoverableTakes" to recoverableTakes,
+                "rejectedTakes" to rejectedTakes,
             ))
         }
     }
+
+    private fun countTakeFiles(prefix: String): Int =
+        filesDir.listFiles { file -> file.name.startsWith(prefix) && file.name.endsWith(".json") }?.size ?: 0
 
     private fun sendScale() {
         if (bridge.connected) bridge.send(JSONObject().put("type", "scale").put("value", movementScale))

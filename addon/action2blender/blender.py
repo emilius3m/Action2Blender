@@ -6,7 +6,7 @@ import socket
 import tempfile
 import time
 import uuid
-from math import atan, isfinite, sin
+from math import atan, isfinite, sin, tan
 from pathlib import Path
 
 import bpy
@@ -167,6 +167,24 @@ def _camera_collection(scene: bpy.types.Scene) -> bpy.types.Collection:
     return collection
 
 
+def _lens_matching_view(scene: bpy.types.Scene, lens: bpy.types.Camera, space) -> float:
+    """Focal length that gives the camera the 3D View's horizontal field of view.
+
+    The 3D View's focal length refers to a 72 mm sensor, so copying it into a camera
+    (36 mm by default) would frame about half the width the user sees.
+    """
+    half_fov = atan(1.0 / space.region_3d.window_matrix[0][0])
+    render = scene.render
+    aspect = (render.resolution_x * render.pixel_aspect_x) / (render.resolution_y * render.pixel_aspect_y)
+    if lens.sensor_fit == "VERTICAL":
+        sensor_across = lens.sensor_height * aspect
+    elif lens.sensor_fit == "AUTO" and aspect < 1:
+        sensor_across = lens.sensor_width * aspect
+    else:
+        sensor_across = lens.sensor_width
+    return min(5000.0, max(1.0, sensor_across / (2.0 * tan(half_fov))))
+
+
 def _create_camera(scene: bpy.types.Scene, mode: str) -> bpy.types.Object:
     if _record_state is not None:
         raise ValueError("Wait for the take to be saved before creating a camera")
@@ -182,8 +200,8 @@ def _create_camera(scene: bpy.types.Scene, mode: str) -> bpy.types.Object:
     view = _view_matrix(scene)
     lens = scene.camera.data.copy() if scene.camera is not None else bpy.data.cameras.new("Action2Blender Lens")
     lens.animation_data_clear()
-    if mode == "view" and space is not None:
-        lens.lens = space.lens
+    if mode == "view" and space is not None and space.region_3d.view_perspective == "PERSP":
+        lens.lens = _lens_matching_view(scene, lens, space)
     camera = bpy.data.objects.new("Action2Blender Camera", lens)
     _camera_collection(scene).objects.link(camera)
     camera.rotation_mode = "QUATERNION"
@@ -713,14 +731,18 @@ def _process_event(scene: bpy.types.Scene, message: dict) -> dict | None:
         elif _mapper is None or camera != _centered_camera:
             scene.a2b_status = "Press Recenter on the phone"
         elif kind == "resume":
-            if isinstance(_record_state, dict) and message.get("id") != _record_state["id"]:
+            # With an ID this is "Resume" after a pause and restarts the timeline. Without one it is
+            # a tracking correction (ARCore relocalized): only realign, whatever the recording state.
+            recording = _record_state if isinstance(_record_state, dict) else None
+            restart = recording is not None and bool(message.get("id")) and not recording["active"]
+            if recording is not None and message.get("id") and message["id"] != recording["id"]:
                 raise ValueError("Recording ID does not match")
-            if isinstance(_record_state, dict) and scene is not _record_state["scene"]:
+            if restart and scene is not recording["scene"]:
                 raise ValueError("Return to the recording scene before resuming")
             _mapper.reanchor(phone)
-            if isinstance(_record_state, dict) and not _record_state["active"]:
+            if restart:
                 _start_playback(scene)
-                _record_state["active"] = True
+                recording["active"] = True
             scene.a2b_status = "Tracking resumed"
             return {"type": "record_resumed", "id": message.get("id", ""),
                     "frame": scene.frame_current, "server_time_ns": time.monotonic_ns()}
@@ -740,7 +762,7 @@ def _process_event(scene: bpy.types.Scene, message: dict) -> dict | None:
 
 
 def _poll_events() -> float | None:
-    global _last_frame_tick
+    global _last_frame_tick, _record_state
     if _server is None:
         return None
     scene = bpy.context.scene
@@ -795,10 +817,19 @@ def _poll_events() -> float | None:
                     response_queue.put(result)
                 elif message["type"] in {"recenter", "create_camera"}:
                     response_queue.put({"type": "recenter_ok", "camera": scene.camera.name})
-                else:
+                elif message["type"] == "take":
                     response_queue.put({"type": "take_saved", "id": message["id"]})
+                else:
+                    response_queue.put({"type": "ack", "message_type": message["type"]})
         except Exception as exc:
             scene.a2b_status = f"Action2Blender: {exc}"
+            if (message["type"] == "take" and isinstance(_record_state, dict)
+                    and _record_state["id"] == message.get("id")):
+                # A take Blender cannot import must not block later recordings: its recording ends here.
+                if _record_state["active"]:
+                    _stop_playback(_record_state["scene"])
+                _record_state = None
+                scene.a2b_status = f"Take not imported: {exc}"[:120]
             if response_queue is not None:
                 response_queue.put({
                     "type": "error",

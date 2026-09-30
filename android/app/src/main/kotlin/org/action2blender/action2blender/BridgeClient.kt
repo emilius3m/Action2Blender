@@ -28,6 +28,7 @@ class BridgeClient(
     private val onRecordingStopped: (JSONObject) -> Unit,
     private val onRecordingResumed: (JSONObject) -> Unit,
     private val onFrameTick: (JSONObject) -> Unit,
+    private val onTakeRejected: (String) -> Unit,
 ) {
     private data class Transfer(val file: File, val id: String, val bytes: ByteArray,
                                 val sha256: String)
@@ -212,6 +213,18 @@ class BridgeClient(
         }
     }
 
+    /** Drops the failed take from this session's queue and carries on with the others. */
+    private fun skipActiveTake(rejected: Boolean) {
+        val transfer = activeTransfer ?: return
+        activeTransfer = null
+        pendingFiles.removeAll { it.absolutePath == transfer.file.absolutePath }
+        if (rejected) {
+            transfer.file.renameTo(File(transfer.file.parentFile, "rejected_${transfer.id}.json"))
+            onTakeRejected(transfer.id)
+        }
+        startNextTake()
+    }
+
     private fun sendChunk(index: Int) {
         val transfer = activeTransfer ?: return
         val offset = index * 48 * 1024
@@ -268,8 +281,13 @@ class BridgeClient(
                     onRecenterAcknowledged(message.optString("camera"))
                 }
                 "error" -> {
-                    if (message.optString("message_type") in setOf("take_begin", "take_chunk", "take_end", "take")) {
-                        writerExecutor.execute { activeTransfer = null; pendingFiles.clear() }
+                    val failed = message.optString("message_type")
+                    if (failed in setOf("take_begin", "take_chunk", "take_end", "take")) {
+                        // Blender read the take and refused it: resending would fail again and hold
+                        // up every later take. Transfer errors and timeouts are worth a later retry.
+                        val rejected = failed == "take" &&
+                            message.optString("message") !in setOf("", "Blender did not confirm the command")
+                        writerExecutor.execute { skipActiveTake(rejected) }
                     }
                     onCommandError(
                         message.optString("message_type"),
