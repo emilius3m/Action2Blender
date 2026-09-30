@@ -486,8 +486,40 @@ class _CameraControlPageState extends State<CameraControlPage> {
         onPressed: _connected ? () => _call('retryRejectedTakes') : null,
         child: Text(uiText('Riprova', 'Try again')),
       ),
+      _discardButton('rejected'),
     ],
   );
+
+  Widget _discardButton(String kind) => TextButton(
+    onPressed: () => _discardTakes(kind),
+    child: Text(uiText('Elimina dal telefono', 'Delete from phone')),
+  );
+
+  Future<void> _discardTakes(String kind) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(uiText('Eliminare queste take?', 'Delete these takes?')),
+        content: Text(
+          uiText(
+            'Le riprese vengono cancellate dal telefono e non potranno più essere inviate a Blender.',
+            'The recordings are erased from this phone and can no longer be sent to Blender.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(uiText('Annulla', 'Cancel')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(uiText('Elimina', 'Delete')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await _call('discardTakes', {'kind': kind});
+  }
 
   Widget _indicator(String title, bool active) => Chip(
     avatar: Icon(
@@ -752,6 +784,7 @@ class _CameraControlPageState extends State<CameraControlPage> {
                         : null,
                     child: Text(uiText('Invia a Blender', 'Send to Blender')),
                   ),
+                  _discardButton('recovered'),
                 ]),
               if (_rejectedTakes > 0) _rejectedTakesCard(),
               Padding(
@@ -1029,6 +1062,7 @@ class _CameraControlPageState extends State<CameraControlPage> {
                                             ),
                                           ),
                                         ),
+                                        _discardButton('recovered'),
                                       ],
                                     ),
                                 ],

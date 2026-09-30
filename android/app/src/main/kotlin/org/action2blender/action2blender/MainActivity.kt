@@ -47,7 +47,8 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private var countdownSeconds = 0
     private var countdownRemaining = 0
-    private var pendingTakeId: String? = null
+    @Volatile private var pendingTakeId: String? = null  // UI, reply and GL threads all read it
+    private val cancelledUnknownIds = mutableSetOf<String>()
     @Volatile private var resumePending = false
     @Volatile private var finalizing = false
     private var currentFrame = 0
@@ -163,7 +164,9 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
             onRecordingStarted = { response ->
                 val id = response.optString("id")
                 val pose = latestPose.get()
-                if (id == pendingTakeId && (!activityResumed || !tracking || pose == null)) {
+                if (id != pendingTakeId) {
+                    cancelUnknownRecording(id)
+                } else if (!activityResumed || !tracking || pose == null) {
                     bridge.send(JSONObject().put("type", "record_cancel").put("id", id))
                     pendingTakeId = null
                     countdownRemaining = 0
@@ -204,7 +207,10 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                 }
             },
             onFrameTick = { response ->
-                if (response.optString("id") == pendingTakeId && recorder.isRecording()) {
+                val id = response.optString("id")
+                if (id != pendingTakeId) {
+                    cancelUnknownRecording(id)
+                } else if (recorder.isRecording()) {
                     currentFrame = response.optInt("frame")
                     recorder.addFrameMarker(bridge.phoneTimeForServer(response.optLong("server_time_ns")), currentFrame)
                     publish(statusText)
@@ -384,6 +390,25 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                         publish(statusText)
                         result.success(null)
                     }
+                    "discardTakes" -> {
+                        if (recorder.isRecording()) error(uiText("Ferma Rec prima di eliminare le take", "Stop recording before deleting takes"))
+                        val files = when (call.argument<String>("kind")) {
+                            "rejected" -> filesDir.listFiles { file -> file.name.startsWith("rejected_") && file.name.endsWith(".json") }
+                            "recovered" -> filesDir.listFiles { file ->
+                                file.name.startsWith("pending_") && file.name.endsWith(".json") &&
+                                    runCatching { JSONObject(file.readText()).optBoolean("partial") }.getOrDefault(false)
+                            }
+                            else -> error(uiText("Tipo di take sconosciuto", "Unknown take type"))
+                        }
+                        files?.forEach { it.delete() }
+                        rejectedTakes = countTakeFiles("rejected_")
+                        recoverableTakes = filesDir.listFiles { file ->
+                            file.name.startsWith("pending_") && file.name.endsWith(".json") &&
+                                runCatching { JSONObject(file.readText()).optBoolean("partial") }.getOrDefault(false)
+                        }?.size ?: 0
+                        publish(uiText("Take eliminate dal telefono", "Takes deleted from this phone"))
+                        result.success(null)
+                    }
                     "retryRejectedTakes" -> {
                         if (!bridge.connected) error(uiText("Connetti Blender prima di inviare", "Connect to Blender before sending"))
                         // After an add-on update Blender may accept them: put them back in the queue.
@@ -545,6 +570,17 @@ class MainActivity : FlutterActivity(), GLSurfaceView.Renderer {
                 "rejectedTakes" to rejectedTakes,
             ))
         }
+    }
+
+    /**
+     * Blender is recording a take this phone does not know: typically its start was confirmed
+     * after the phone had given up waiting. No samples exist for it, so no take would ever
+     * arrive; stop Blender now instead of letting it record to the end of the timeline.
+     */
+    private fun cancelUnknownRecording(id: String) {
+        if (!id.matches(TAKE_ID) || !synchronized(cancelledUnknownIds) { cancelledUnknownIds.add(id) }) return
+        bridge.send(JSONObject().put("type", "record_cancel").put("id", id))
+        publish(uiText("Blender aveva avviato una ripresa annullata: fermata", "Blender had started a cancelled recording: stopped"))
     }
 
     private fun countTakeFiles(prefix: String): Int =

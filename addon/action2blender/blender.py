@@ -185,9 +185,22 @@ def _lens_matching_view(scene: bpy.types.Scene, lens: bpy.types.Camera, space) -
     return min(5000.0, max(1.0, sensor_across / (2.0 * tan(half_fov))))
 
 
+def _recording_in_progress() -> bool:
+    """True while a take is being recorded, not while a stopped one waits for its data.
+
+    A stopped take carries its own snapshot and finds its camera by take ID, so it can
+    still be imported later (for example a partial take sent by hand after a forced
+    close); waiting for it must not block Rec or new cameras.
+    """
+    global _record_state
+    if isinstance(_record_state, dict) and not _record_state["active"]:
+        _record_state = None
+    return _record_state is not None
+
+
 def _create_camera(scene: bpy.types.Scene, mode: str) -> bpy.types.Object:
-    if _record_state is not None:
-        raise ValueError("Wait for the take to be saved before creating a camera")
+    if _recording_in_progress():
+        raise ValueError("Stop the current take before creating a camera")
     corners = None
     if mode == "subject":
         subject = bpy.context.view_layer.objects.active
@@ -661,8 +674,8 @@ def _process_event(scene: bpy.types.Scene, message: dict) -> dict | None:
         if camera.parent is not None or any(not constraint.mute and constraint.influence > 0
                                             for constraint in camera.constraints):
             raise ValueError("Choose a camera without a parent or active constraints")
-        if _record_state is not None:
-            raise ValueError("Finish the current take before recording")
+        if _recording_in_progress():
+            raise ValueError("Stop the current take before recording")
         if _playback_window(scene) is None:
             raise ValueError("Open a Blender window to play the timeline")
         if (scene.frame_preview_end if scene.use_preview_range else scene.frame_end) <= scene.frame_current:
@@ -834,6 +847,7 @@ def _poll_events() -> float | None:
                 response_queue.put({
                     "type": "error",
                     "message_type": message["type"],
+                    "id": str(message.get("id", "")),
                     "message": str(exc)[:160],
                 })
     return 0.04

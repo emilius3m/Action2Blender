@@ -74,7 +74,19 @@ class TransportTests(unittest.TestCase):
                              "data": base64.b64encode(data).decode()})
             self.assertEqual(read_line(file)["index"], 1)
             send_line(file, {"type": "take_end", "id": "bad"})
-            self.assertEqual(read_line(file)["message"], "Take checksum does not match")
+            reply = read_line(file)
+            self.assertEqual(reply["message"], "Take checksum does not match")
+            self.assertEqual((reply["message_type"], reply["id"]), ("take_end", "bad"))  # retry later
+            # Intact bytes Blender cannot use are a rejection of the take, so the phone sets it aside.
+            send_line(file, {"type": "take_begin", "id": "bad", "size": len(data),
+                             "sha256": hashlib.sha256(data).hexdigest()})
+            self.assertEqual(read_line(file)["index"], 0)
+            send_line(file, {"type": "take_chunk", "id": "bad", "index": 0,
+                             "data": base64.b64encode(data).decode()})
+            self.assertEqual(read_line(file)["index"], 1)
+            send_line(file, {"type": "take_end", "id": "bad"})
+            reply = read_line(file)
+            self.assertEqual((reply["message_type"], reply["id"]), ("take", "bad"))
         self.assertNotIn("bad", self.server._takes)
 
     def test_rejects_large_message_before_pairing(self):

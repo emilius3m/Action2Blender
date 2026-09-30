@@ -60,9 +60,23 @@ assert reply["type"] == "error" and "does not match" in reply["message"], reply
 bad_take = {"type": "take", "id": "rec-1", "events": [{"t": 0, "p": [0, 0, 0], "q": [0, 0, 0, 1]}],
             "snapshot": {"format": 2, "id": "rec-1", "camera": {}, "tracking": {}, "scene": {}}}
 reply = poll(bad_take)
-assert reply["type"] == "error", reply
+assert reply["type"] == "error" and reply["id"] == "rec-1", reply
 assert addon._record_state is None, "a rejected take kept Blender waiting for it"
 assert "not imported" in scene.a2b_status, scene.a2b_status
+
+# A stopped take still waiting for its data (e.g. a partial take after a forced close of the
+# app) no longer blocks Rec; a take that is really recording still does.
+addon._record_state = recording(active=False)
+reply = poll(phone("record_prepare", id="next-take"))
+assert reply["type"] == "record_ready", reply
+addon._prepared = None
+addon._record_state = recording(active=True)
+try:
+    addon._process_event(scene, phone("record_prepare", id="another-take"))
+except ValueError as exc:
+    assert "Stop the current take" in str(exc), exc
+else:
+    raise AssertionError("Rec accepted while a take was recording")
 
 # "From Blender 3D View": a 3D View at 50 mm shows 71.5° like a 72 mm sensor, so a
 # 36 mm camera needs 25 mm to frame the same width.

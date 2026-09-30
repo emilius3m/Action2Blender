@@ -25,6 +25,10 @@ Aggiornato il 29 settembre 2026. Questa versione non è pubblicata. La release s
 - **Nuova camera dalla vista 3D:** la focale riproduce il campo visivo orizzontale della vista (la focale della Vista 3D si riferisce a un sensore di 72 mm). Verificato in Blender: vista a 50 mm = 71,5°, nuova camera 25 mm = 71,5°.
 - Minori: l'ID ricevuto con `take_saved` deve essere un UUID prima di diventare un nome di file; il controllo del messaggio del lettore QR funziona anche in inglese; le take hanno segno dei quaternioni continuo.
 - Test: `tests/blender_robustness_smoke.py`, casi nuovi in `tests/test_core.py` e `tests/test_transport.py`.
+- **Telefono fuori passo (problema 3 della prova):** se Blender conferma una ripresa dopo che il telefono ha già rinunciato (conferma oltre 10 s), il telefono riceve `record_started` o `frame_tick` con un ID sconosciuto e invia subito `record_cancel`, invece di lasciare che Blender registri fino alla fine della timeline una take che non arriverà mai. `pendingTakeId` è `@Volatile`.
+- **Ripresa ferma in attesa della take:** una ripresa già fermata che aspetta ancora i suoi dati (per esempio la take parziale dopo una chiusura forzata dell'app) non blocca più Rec né Nuova camera; la take resta importabile quando arriva, perché porta il suo snapshot e trova la camera per ID. Blocca solo una ripresa davvero in corso ("Stop the current take before recording").
+- **Eliminare take dal telefono:** le schede **Take recuperate** e **Take non importate** hanno **Elimina dal telefono**, con conferma.
+- **Errori con ID:** gli errori di Blender e del trasferimento indicano l'ID della take; il telefono salta la take in corso solo se l'errore la riguarda. Una take arrivata intatta ma inutilizzabile (per esempio oltre 100.000 eventi) è segnalata come rifiuto della take, non come errore di trasferimento, e quindi viene messa da parte invece di essere reinviata a ogni collegamento.
 
 ## Percorsi principali
 

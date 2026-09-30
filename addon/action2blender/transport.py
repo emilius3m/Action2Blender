@@ -25,6 +25,10 @@ MAX_TAKE_BYTES = 64 * 1024 * 1024
 MAX_CHUNK_BYTES = 48 * 1024
 
 
+class TakeRejected(ValueError):
+    """A take transferred intact whose content Blender cannot use."""
+
+
 def _validate_scale(value: Any) -> float:
     scale = float(value)
     if not math.isfinite(scale) or not 0.01 <= scale <= 100.0:
@@ -182,9 +186,14 @@ class _Handler(socketserver.StreamRequestHandler):
                 else:
                     threading.Thread(target=self._wait_response,
                                      args=(server, response_queue, validated), daemon=True).start()
+            except TakeRejected as exc:
+                # The take arrived intact but Blender cannot use it: report it like an import failure.
+                self._reply({"type": "error", "message": str(exc)[:160], "message_type": "take",
+                             "id": message.get("id", "")})
             except (ValueError, KeyError, TypeError, json.JSONDecodeError, queue.Full, queue.Empty) as exc:
                 self._reply({"type": "error", "message": str(exc)[:160],
-                             "message_type": message.get("type", "") if isinstance(message, dict) else ""})
+                             "message_type": message.get("type", "") if isinstance(message, dict) else "",
+                             "id": message.get("id", "") if isinstance(message, dict) else ""})
 
     def _reply(self, value: dict) -> None:
         with self._write_lock:
@@ -197,7 +206,7 @@ class _Handler(socketserver.StreamRequestHandler):
         try:
             response = replies.get(timeout=120 if message["type"] == "take" else 10)
         except queue.Empty:
-            response = {"type": "error", "message_type": message["type"],
+            response = {"type": "error", "message_type": message["type"], "id": message.get("id", ""),
                         "message": "Blender did not confirm the command"}
         try:
             self._reply(response)
@@ -288,9 +297,13 @@ class PoseServer(socketserver.ThreadingTCPServer):
             data = bytes(item["data"])
             if hashlib.sha256(data).hexdigest() != item["sha256"]:
                 raise ValueError("Take checksum does not match")
-        message = validate_message(json.loads(data))
+        # From here the bytes are exactly what the phone stored: sending them again cannot help.
+        try:
+            message = validate_message(json.loads(data))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise TakeRejected(str(exc)) from exc
         if message["type"] != "take" or message["id"] != take_id:
-            raise ValueError("Take ID does not match transfer")
+            raise TakeRejected("Take ID does not match transfer")
         return message
 
     def clear_take(self, take_id: str) -> None:

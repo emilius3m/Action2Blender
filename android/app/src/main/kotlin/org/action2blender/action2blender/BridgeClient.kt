@@ -287,7 +287,11 @@ class BridgeClient(
                         // up every later take. Transfer errors and timeouts are worth a later retry.
                         val rejected = failed == "take" &&
                             message.optString("message") !in setOf("", "Blender did not confirm the command")
-                        writerExecutor.execute { skipActiveTake(rejected) }
+                        val takeId = message.optString("id")
+                        writerExecutor.execute {
+                            // Older add-ons send no ID; then the error can only be about the take in transfer.
+                            if (takeId.isEmpty() || takeId == activeTransfer?.id) skipActiveTake(rejected)
+                        }
                     }
                     onCommandError(
                         message.optString("message_type"),
